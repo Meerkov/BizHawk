@@ -49,6 +49,13 @@ namespace BizHawk.Client.EmuHawk
 
 		public void Step(bool allowSleep, int forceFrameSkip)
 		{
+			//Actually don't render when in absolute 0 mode.
+			if (Global.Config.DispSpeedupFeatures == 0)
+			{
+				skipnextframe = true;
+				return;
+				
+			}
 			//TODO - figure out what allowSleep is supposed to be used for
 			//TODO - figure out what forceFrameSkip is supposed to be used for
 

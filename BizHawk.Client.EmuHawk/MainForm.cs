@@ -483,38 +483,53 @@ namespace BizHawk.Client.EmuHawk
 			Activate();
 			BringToFront();
 
-			for (;;)
+			bool do_updates = true;
+			int count = 0;
+			while(true)
 			{
-				Input.Instance.Update();
-
-				// handle events and dispatch as a hotkey action, or a hotkey button, or an input button
-				ProcessInput();
-				Global.ClientControls.LatchFromPhysical(HotkeyCoalescer);
-
-				Global.ActiveController.LatchFromPhysical(Global.ControllerInputCoalescer);
-
-				Global.ActiveController.ApplyAxisConstraints(
-					(Global.Emulator is N64 && Global.Config.N64UseCircularAnalogConstraint) ? "Natural Circle" : null);
-
-				Global.ActiveController.OR_FromLogical(Global.ClickyVirtualPadController);
-				Global.AutoFireController.LatchFromPhysical(Global.ControllerInputCoalescer);
-
-				if (Global.ClientControls["Autohold"])
+				if (Global.Config.DispSpeedupFeatures != 0 || count >= 1000)
 				{
-					Global.StickyXORAdapter.MassToggleStickyState(Global.ActiveController.PressedButtons);
-					Global.AutofireStickyXORAdapter.MassToggleStickyState(Global.AutoFireController.PressedButtons);
+					do_updates = true;
+					count = 0;
 				}
-				else if (Global.ClientControls["Autofire"])
+				else
 				{
-					Global.AutofireStickyXORAdapter.MassToggleStickyState(Global.ActiveController.PressedButtons);
+					count++;
 				}
 
-				// autohold/autofire must not be affected by the following inputs
-				Global.ActiveController.Overrides(Global.LuaAndAdaptor);
-
-				if (GlobalWin.Tools.Has<LuaConsole>())
+				if (do_updates)
 				{
-					GlobalWin.Tools.LuaConsole.ResumeScripts(false);
+					Input.Instance.Update();
+
+					// handle events and dispatch as a hotkey action, or a hotkey button, or an input button
+					ProcessInput();
+					Global.ClientControls.LatchFromPhysical(HotkeyCoalescer);
+
+					Global.ActiveController.LatchFromPhysical(Global.ControllerInputCoalescer);
+
+					Global.ActiveController.ApplyAxisConstraints(
+						(Global.Emulator is N64 && Global.Config.N64UseCircularAnalogConstraint) ? "Natural Circle" : null);
+
+					Global.ActiveController.OR_FromLogical(Global.ClickyVirtualPadController);
+					Global.AutoFireController.LatchFromPhysical(Global.ControllerInputCoalescer);
+
+					if (Global.ClientControls["Autohold"])
+					{
+						Global.StickyXORAdapter.MassToggleStickyState(Global.ActiveController.PressedButtons);
+						Global.AutofireStickyXORAdapter.MassToggleStickyState(Global.AutoFireController.PressedButtons);
+					}
+					else if (Global.ClientControls["Autofire"])
+					{
+						Global.AutofireStickyXORAdapter.MassToggleStickyState(Global.ActiveController.PressedButtons);
+					}
+
+					// autohold/autofire must not be affected by the following inputs
+					Global.ActiveController.Overrides(Global.LuaAndAdaptor);
+
+					if (GlobalWin.Tools.Has<LuaConsole>())
+					{
+						GlobalWin.Tools.LuaConsole.ResumeScripts(false);
+					}
 				}
 
 				StepRunLoop_Core();
@@ -522,7 +537,11 @@ namespace BizHawk.Client.EmuHawk
 
 				Render();
 
-				CheckMessages();
+				if (do_updates)
+				{
+					CheckMessages();
+					do_updates = false;
+				}
 
 				if (_exitRequestPending)
 				{
@@ -2793,10 +2812,10 @@ namespace BizHawk.Client.EmuHawk
 					}
 				}
 				
-				Global.MovieSession.HandleMovieOnFrameLoop();
+				// Global.MovieSession.HandleMovieOnFrameLoop();
 
 				//why not skip audio if the user doesnt want sound
-				bool renderSound = Global.Config.SoundEnabled || !IsTurboing;
+				bool renderSound = Global.Config.SoundEnabled && !IsTurboing;
 				renderSound |= (_currAviWriter != null && _currAviWriter.UsesAudio);
 
 				bool render = !_throttle.skipnextframe || (_currAviWriter != null && _currAviWriter.UsesVideo);
