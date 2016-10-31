@@ -206,13 +206,11 @@ loop:
 	assert( (unsigned) y < 0x100 );
 #endif
 
+	if ( clock_count >= clock_limit )
+		goto end;
+
 	uint8_t const* page = code_map [pc >> page_bits];
 	opcode = page [pc];
-	pc++;
-	
-	if ( clock_count >= clock_limit )
-		goto stop;
-
 
 #if !defined (NDEBUG)
 	if (tracecb)
@@ -222,12 +220,14 @@ loop:
 		scratch[1] = x;
 		scratch[2] = y;
 		scratch[3] = sp;
-		scratch[4] = pc - 1;
+		scratch[4] = pc;
 		scratch[5] = status;
 		scratch[6] = opcode;
 		tracecb(scratch);
 	}
 #endif
+
+	pc++;
 	
 	clock_count += clock_table [opcode];
 	
@@ -272,27 +272,23 @@ case op + 0x0C: /* (ind),y */           \
 	IND_Y(true,true)                    \
 	goto ptr##op;                       \
 case op + 0x10: /* zp,X */              \
-	data = page [pc];                   \
-	data = uint8_t (data + x);          \
+	data = uint8_t (page [pc] + x);     \
 	data = READ_LOW( data );            \
 	goto imm##op;                       \
 case op + 0x00: /* zp */                \
-	data = page [pc];                   \
-	data = READ_LOW( data );            \
+	data = READ_LOW( page [pc] );       \
 	goto imm##op;                       \
 case op + 0x14: /* abs,Y */             \
-	data = page [pc];                   \
-	data += y;                          \
+	data = page [pc] + y;               \
 	goto ind##op;                       \
 case op + 0x18: /* abs,X */             \
-	data = page [pc];                   \
-	data += x;                          \
+	data = page [pc] + x;               \
 ind##op: {                              \
 	HANDLE_PAGE_CROSSING( data );       \
 	int temp = data;                    \
 	ADD_PAGE                            \
 	if ( temp & 0x100 )                 \
-		 READ_NO_RETURN( data - 0x100 );          \
+		 READ_NO_RETURN( data - 0x100 );      \
 	goto ptr##op;                       \
 }                                       \
 case op + 0x08: /* abs */               \
@@ -315,16 +311,13 @@ case op + 0x0C:                         \
 	IND_Y(false,false)                  \
 	goto imm##op;                       \
 case op + 0x10: /* zp,X */              \
-	data = page [pc];                   \
-	data = uint8_t (data + x);          \
+	data = uint8_t (page [pc] + x);     \
 	goto imm##op;                       \
 case op + 0x14: /* abs,Y */             \
-	data = page [pc];                   \
-	data += y;                          \
+	data = page [pc] + y;               \
 	goto ind##op;                       \
 case op + 0x18: /* abs,X */             \
-	data = page [pc];                   \
-	data += x;                          \
+	data = page [pc] + x;               \
 ind##op: {                              \
 	int temp = data;                    \
 	ADD_PAGE                            \
@@ -342,8 +335,8 @@ imm##op:                                \
 #define BRANCH( cond )      \
 {                           \
 	pc++;                   \
-	int offset = (BOOST::int8_t) data;  \
 	if ( !(cond) ) {clock_count--; goto loop;} \
+	int offset = (BOOST::int8_t) data;  \
 	int extra_clock = (pc & 0xFF) + offset; \
 	pc = BOOST::uint16_t( pc + offset); \
 	clock_count += (extra_clock >> 8) & 1;  \
@@ -428,8 +421,7 @@ imm##op:                                \
 	}
 	
 	case 0x60: // RTS
-		pc = 1 + READ_LOW( sp );
-		pc += READ_LOW( 0x100 | (sp - 0xFF) ) * 0x100;
+		pc = 1 + READ_LOW( sp ) + READ_LOW( 0x100 | (sp - 0xFF) ) * 0x100;
 		sp = (sp - 0xFE) | 0x100;
 		goto loop;
 
@@ -602,8 +594,7 @@ imm##op:                                \
 // Load/store
 	
 	case 0x94: // STY zp,x
-		data = uint8_t (page[pc] + x);
-		WRITE_LOW(data, y);
+		WRITE_LOW( uint8_t(page[pc] + x) , y);
 		pc++;
 		goto loop;
 
@@ -1535,14 +1526,13 @@ imm##op:                                \
 		goto loop;
 		
 		//result = result_badop; // TODO: re-enable
-		goto stop;
+		//pc--;
+		//goto end;
 	}
 	
 	// If this fails then the case above is missing an opcode
 	assert( false );
 	
-stop:
-	pc--;
 end:
 	
 	{
