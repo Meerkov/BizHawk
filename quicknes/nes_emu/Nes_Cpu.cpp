@@ -87,6 +87,7 @@ void Nes_Cpu::map_code( nes_addr_t start, unsigned size, const void* data )
 
 #define READ_LIKELY_PPU( addr ) (NES_CPU_READ_PPU( this, (addr), (clock_count) ))
 #define READ( addr )            (NES_CPU_READ( this, (addr), (clock_count) ))
+#define READ_NO_RETURN( addr ) (NES_CPU_READ_CLOCK_ONLY( this, (addr), (clock_count) ))
 #define WRITE( addr, data )     {NES_CPU_WRITE( this, (addr), (data), (clock_count) );}
 
 #define READ_LOW( addr )        (low_mem [int (addr)])
@@ -139,6 +140,16 @@ static const unsigned char clock_table [256] = {
 	2,6,2,8,3,3,5,5,2,2,2,2,4,4,6,6,// E
 	3,5,2,8,4,4,6,6,2,4,2,7,4,4,7,7 // F
 };
+// status flags
+
+static const int  st_n = 0x80;
+static const int  st_v = 0x40;
+static const int  st_r = 0x20;
+static const int  st_b = 0x10;
+static const int  st_d = 0x08;
+static const int  st_i = 0x04;
+static const int  st_z = 0x02;
+static const int  st_c = 0x01;
 
 Nes_Cpu::result_t Nes_Cpu::run( nes_time_t end )
 {
@@ -159,17 +170,6 @@ Nes_Cpu::result_t Nes_Cpu::run( nes_time_t end )
 	int a = r.a;
 	int x = r.x;
 	int y = r.y;
-	
-	// status flags
-	
-	const int  st_n = 0x80;
-	const int  st_v = 0x40;
-	const int  st_r = 0x20;
-	const int  st_b = 0x10;
-	const int  st_d = 0x08;
-	const int  st_i = 0x04;
-	const int  st_z = 0x02;
-	const int  st_c = 0x01;
 	
 	#define IS_NEG (nz & 0x880)
 	
@@ -227,7 +227,6 @@ loop:
 	
 	clock_count += clock_table [opcode];
 	unsigned data;
-	//data = page [pc];
 	
 	switch (opcode)
 	{
@@ -252,7 +251,7 @@ loop:
 		data = temp + 0x100 * READ_LOW( uint8_t (data + 1) );   \
 		if (c) HANDLE_PAGE_CROSSING( temp );                    \
 		if (!(r) || (temp & 0x100))                             \
-			READ( data - ( temp & 0x100 ) );                    \
+			READ_NO_RETURN( data - ( temp & 0x100 ) );                    \
 	}
 
 #define IND_X {                                                 \
@@ -290,7 +289,7 @@ ind##op: {                              \
 	int temp = data;                    \
 	ADD_PAGE                            \
 	if ( temp & 0x100 )                 \
-		 READ( data - 0x100 );          \
+		 READ_NO_RETURN( data - 0x100 );          \
 	goto ptr##op;                       \
 }                                       \
 case op + 0x08: /* abs */               \
@@ -326,7 +325,7 @@ case op + 0x18: /* abs,X */             \
 ind##op: {                              \
 	int temp = data;                    \
 	ADD_PAGE                            \
-	READ( data - ( temp & 0x100 ) );    \
+	READ_NO_RETURN( data - ( temp & 0x100 ) );    \
 	goto imm##op;                       \
 }                                       \
 case op + 0x08: /* abs */               \
@@ -352,15 +351,13 @@ imm##op:                                \
 // Often-Used
 
 	case 0xB5: // LDA zp,x
-		data = page [pc];
-		data = uint8_t (data + x);
+		data = uint8_t (page[pc] + x);
 		a = nz = READ_LOW(data);
 		pc++;
 		goto loop;
 
 	case 0xA5: // LDA zp
-		data = page [pc];
-		a = nz = READ_LOW( data );
+		a = nz = READ_LOW( page[pc] );
 		pc++;
 		goto loop;
 	
@@ -403,16 +400,15 @@ imm##op:                                \
 		BRANCH( !(uint8_t) nz );
 	
 	case 0x95: // STA zp,x
-		data = page [pc];
-		data = uint8_t (data + x);
-		pc++;
+		data = uint8_t (page[pc] + x);
 		WRITE_LOW(data, a);
+		pc++;
 		goto loop;
 
 	case 0x85: // STA zp
 		data = page [pc];
-		pc++;
 		WRITE_LOW( data, a );
+		pc++;
 		goto loop;
 	
 	case 0xC8: INC_DEC_XY( y, 1 )  // INY
@@ -422,13 +418,13 @@ imm##op:                                \
 		goto loop;
 
 	case 0x98: // TYA
-		a = nz = y;
+		nz = a = y;
 		goto loop;
 	
 	case 0xAD:{// LDA abs
 		unsigned addr = GET_ADDR();
-		pc += 2;
 		a = nz = READ_LIKELY_PPU( addr );
+		pc += 2;
 		goto loop;
 	}
 	
@@ -439,25 +435,32 @@ imm##op:                                \
 		goto loop;
 
 	case 0x99: // STA abs,Y
-		data = page [pc];
-		data += y;
-		goto sta_ind_common;
+		data = page [pc] + y; 
+		{
+			int temp = data;
+			ADD_PAGE
+			READ_NO_RETURN(data - (temp & 0x100));
+		}
+		WRITE(data, a);
+		pc++;
+		goto loop;
 	
 	case 0x9D: // STA abs,X
-		data = page [pc];
-		data += x;
-	sta_ind_common: {
+		data = page [pc] + x;
+	{
 		int temp = data;
 		ADD_PAGE
-		READ( data - ( temp & 0x100 ) );
-		goto sta_ptr;
+		READ_NO_RETURN( data - ( temp & 0x100 ) );
+		WRITE(data, a);
 	}
+		pc++;
+		goto loop;
+
 	case 0x8D: // STA abs
 		data = page [pc];
 		ADD_PAGE
-	sta_ptr:
-		pc++;
 		WRITE( data, a );
+		pc++;
 		goto loop;
 	
 	case 0xA9: // LDA #imm
@@ -497,10 +500,9 @@ imm##op:                                \
 	case 0xB9:// LDA abs,Y
 		data = page [pc] + y;
 		{
-			pc++;
-			unsigned msb = GET_OPERAND(pc);
+			unsigned msb = GET_OPERAND(pc + 1);
 			// indexed common
-			pc++;
+			pc+=2;
 			HANDLE_PAGE_CROSSING(data);
 			int temp = data;
 			data += msb * 0x100;
@@ -508,17 +510,16 @@ imm##op:                                \
 			if ((unsigned)(data - 0x2000) >= 0x6000)
 				goto loop;
 			if (temp & 0x100)
-				READ(data - 0x100);
+				READ_NO_RETURN(data - 0x100);
 			a = nz = READ(data);
-			goto loop;
 		}
+		goto loop;
 
 	case 0xBD:{// LDA abs,X
 		data = page [pc] + x;
-		pc++;
-		unsigned msb = GET_OPERAND( pc );
+		unsigned msb = GET_OPERAND( pc+1 );
 		// indexed common
-		pc++;
+		pc+=2;
 		HANDLE_PAGE_CROSSING( data );
 		int temp = data;
 		data += msb * 0x100;
@@ -526,7 +527,7 @@ imm##op:                                \
 		if ( (unsigned) (data - 0x2000) >= 0x6000 )
 			goto loop;
 		if ( temp & 0x100 )
-			READ( data - 0x100 );
+			READ_NO_RETURN( data - 0x100 );
 		a = nz = READ( data );
 		goto loop;
 	}
@@ -544,7 +545,7 @@ imm##op:                                \
 		if ( (unsigned) (data - 0x2000) >= 0x6000 )
 			goto loop;
 		if ( temp & 0x100 )
-			READ( data - 0x100 );
+			READ_NO_RETURN( data - 0x100 );
 		a = nz = READ( data );
 		goto loop;
 	}
@@ -579,41 +580,35 @@ imm##op:                                \
 // Load/store
 	
 	case 0x94: // STY zp,x
-		data = page [pc];
-		data = uint8_t (data + x);
-		pc++;
+		data = uint8_t (page[pc] + x);
 		WRITE_LOW(data, y);
+		pc++;
 		goto loop;
 
 	case 0x84: // STY zp
-		data = page [pc];
+		WRITE_LOW(page[pc], y );
 		pc++;
-		WRITE_LOW( data, y );
 		goto loop;
 	
 	case 0x96: // STX zp,y
-		data = page [pc];
-		data = uint8_t (data + y);
-		pc++;
+		data = uint8_t (page[pc] + y);
 		WRITE_LOW(data, x);
+		pc++;
 		goto loop;
 
 	case 0x86: // STX zp
-		data = page [pc];
+		WRITE_LOW(page[pc], x );
 		pc++;
-		WRITE_LOW( data, x );
 		goto loop;
 	
 	case 0xB6: // LDX zp,y
-		data = page [pc];
-		data = uint8_t (data + y);
-		nz = x = data = READ_LOW(data);
+		data = uint8_t (page[pc] + y);
+		nz = x = READ_LOW(data);
 		pc++;
 		goto loop;
 
 	case 0xA6: // LDX zp
-		data = page [pc];
-		nz = x = data = READ_LOW( data );
+		nz = x = READ_LOW( page[pc] );
 		pc++;
 		goto loop;
 
@@ -623,8 +618,7 @@ imm##op:                                \
 		goto loop;
 	
 	case 0xB4: // LDY zp,x
-		data = page [pc];
-		data = uint8_t (data + x);
+		data = uint8_t (page[pc] + x);
 		nz = y = READ_LOW(data);
 		pc++;
 		goto loop;
@@ -643,12 +637,16 @@ imm##op:                                \
 	case 0x91: // STA (ind),Y
 		data = page [pc];
 		IND_Y(false,false)
-		goto sta_ptr;
+		WRITE(data, a);
+		pc++;
+		goto loop;
 	
 	case 0x81: // STA (ind,X)
 		data = page [pc];
 		IND_X
-		goto sta_ptr;
+		WRITE(data, a);
+		pc++;
+		goto loop;
 	
 	case 0xBC: // LDY abs,X
 		data = page [pc] + x;
@@ -656,9 +654,9 @@ imm##op:                                \
 		{
 			unsigned addr = data + 0x100 * GET_OPERAND(pc+1);
 			if (data & 0x100)
-				READ(addr - 0x100);
-			pc+=2;
+				READ_NO_RETURN(addr - 0x100);
 			y = nz = READ(addr);
+			pc+=2;
 			goto loop;
 		}
 
@@ -666,9 +664,9 @@ imm##op:                                \
 		data = page [pc];
 		unsigned addr = data + 0x100 * GET_OPERAND( pc+1 );
 		if ( data & 0x100 )
-			READ( addr - 0x100 );
-		pc+=2;
+			READ_NO_RETURN( addr - 0x100 );
 		y = nz = READ( addr );
+		pc+=2;
 		goto loop;
 	}
 	
@@ -677,34 +675,33 @@ imm##op:                                \
 		HANDLE_PAGE_CROSSING( data );
 		{
 			unsigned addr = data + 0x100 * GET_OPERAND(pc+1);
-			pc+=2;
 			if (data & 0x100)
-				READ(addr - 0x100);
+				READ_NO_RETURN(addr - 0x100);
 			x = nz = READ(addr);
+			pc+=2;
 		}
 		goto loop;
 
 	case 0xAE:{// LDX abs
 		data = page [pc];
 		unsigned addr = data + 0x100 * GET_OPERAND( pc+1 );
-		pc+=2;
 		if ( data & 0x100 )
-			READ( addr - 0x100 );
+			READ_NO_RETURN( addr - 0x100 );
 		x = nz = READ( addr );
+		pc+=2;
 		}
 		goto loop;
 	
-	{
-		int temp;
-	case 0x8C: // STY abs
-		temp = y;
-		goto store_abs;
-	
-	case 0x8E: // STX abs
-		temp = x;
-	store_abs:
+	case 0x8C: {// STY abs
 		unsigned addr = GET_ADDR();
-		WRITE( addr, temp );
+		WRITE(addr, y);
+		pc += 2;
+		goto loop;
+	}
+	
+	case 0x8E: {// STX abs
+		unsigned addr = GET_ADDR();
+		WRITE( addr, x );
 		pc += 2;
 		goto loop;
 	}
@@ -713,14 +710,16 @@ imm##op:                                \
 
 	case 0xEC:{// CPX abs
 		unsigned addr = GET_ADDR();
-		pc++;
 		data = READ( addr );
-		goto cpx_data;
+		nz = x - data;
+		c = ~nz;
+		nz &= 0xFF;
+		pc+=2;
+		goto loop;
 	}
 	
 	case 0xE4: // CPX zp
-		data = page [pc];
-		data = READ_LOW( data );
+		data = READ_LOW( page[pc] );
 		goto cpx_data;
 
 	case 0xE0: // CPX #imm
@@ -734,14 +733,16 @@ imm##op:                                \
 	
 	case 0xCC:{// CPY abs
 		unsigned addr = GET_ADDR();
-		pc++;
 		data = READ( addr );
-		goto cpy_data;
+		nz = y - data;
+		c = ~nz;
+		nz &= 0xFF;
+		pc+=2;
+		goto loop;
 	}
 	
 	case 0xC4: // CPY zp
-		data = page [pc];
-		data = READ_LOW( data );
+		data = READ_LOW( page [pc] );
 		goto cpy_data;
 
 	case 0xC0: // CPY #imm
@@ -780,8 +781,8 @@ imm##op:                                \
 			goto loop;
 		// result must be zero, even if N bit is set
 		nz = nz << 4 & 0x800;
-		goto loop;
 	}
+		goto loop;
 	
 	case 0x24: // BIT zp
 		data = page [pc];
@@ -802,8 +803,7 @@ imm##op:                                \
 		goto adc_imm;
 
 	case 0xEB: // unofficial equivalent
-		data = page [pc];
-		data ^= 0xFF;
+		data = page [pc] ^ 0xFF;
 		goto adc_imm;
 	
 	ARITH_ADDR_MODES( 0x65 ) // ADC
@@ -821,8 +821,10 @@ imm##op:                                \
 // Shift/rotate
 
 	case 0x4A: // LSR A
-	lsr_a:
-		c = 0;
+		c = a << 8;
+		a = nz = a >> 1;
+		goto loop;
+
 	case 0x6A: // ROR A
 		nz = (c >> 1) & 0x80; // could use bit insert macro here
 		c = a << 8;
@@ -831,8 +833,7 @@ imm##op:                                \
 		goto loop;
 
 	case 0x0A: // ASL A
-		nz = a << 1;
-		c = nz;
+		c = nz = a << 1;
 		a = (uint8_t) nz;
 		goto loop;
 
@@ -846,77 +847,136 @@ imm##op:                                \
 	}
 	
 	case 0x3E: // ROL abs,X
-		data = page [pc];
-		data += x;
-		goto rol_abs;
+		data = page [pc]+ x;
+		{
+			int temp = data;
+			ADD_PAGE
+			READ_NO_RETURN(data - (temp & 0x100));
+			WRITE(data, temp = READ(data));
+			nz = (c >> 8) & 1;
+			nz |= (c = temp << 1);
+		}
+		WRITE(data, (uint8_t)nz);
+		pc++;
+		goto loop;
 	
 	case 0x1E: // ASL abs,X
-		data = page [pc];
-		data += x;
-		c = 0;
-		goto rol_abs;
+		data = page [pc] + x;
+		{
+			int temp = data;
+			ADD_PAGE
+			READ_NO_RETURN(data - (temp & 0x100));
+			WRITE(data, temp = READ(data));
+			nz = c = temp << 1;
+		}
+		pc++;
+		WRITE(data, (uint8_t)nz);
+		goto loop;
 
 	case 0x0E: // ASL abs
 		data = page [pc];
-		c = 0;
-		goto rol_abs;
+		{
+			int temp = data;
+			ADD_PAGE
+			WRITE(data, temp = READ(data));
+			nz = c = temp << 1;
+		}
+		WRITE(data, (uint8_t)nz);
+		pc++;
+		goto loop;
 
 	case 0x2E: // ROL abs
 		data = page [pc];
-	rol_abs: {
+	{
 		int temp = data;
 		ADD_PAGE
-		if ( opcode == 0x1E || opcode == 0x3E ) READ( data - ( temp & 0x100 ) );
 		WRITE( data, temp = READ( data ) );
 		nz = (c >> 8) & 1;
 		nz |= (c = temp << 1);
     }
-    rotate_common:
 		pc++;
 		WRITE( data, (uint8_t) nz );
 		goto loop;
 
 	case 0x7E: // ROR abs,X
-		data = page [pc] + x;
-		goto ror_abs;
+		data = page [pc] + x; 
+		{
+			int temp = data;
+			ADD_PAGE
+			READ_NO_RETURN(data - (temp & 0x100));
+			WRITE(data, temp = READ(data));
+			nz = ((c >> 1) & 0x80) | (temp >> 1);
+			c = temp << 8;
+			WRITE(data, (uint8_t)nz);
+			pc++;
+			goto loop;
+		}
 	
 	case 0x5E: // LSR abs,X
 		data = page [pc] + x;
-		c = 0;
-		goto ror_abs;
+		{
+			int temp = data;
+			ADD_PAGE
+			READ_NO_RETURN(data - (temp & 0x100));
+			WRITE(data, temp = READ(data));
+			nz = (temp >> 1);
+			c = temp << 8;
+			pc++;
+			WRITE(data, (uint8_t)nz);
+			goto loop;
+		}
 
 	case 0x4E: // LSR abs
 		data = page [pc];
-		c = 0;
-		goto ror_abs;
+		{
+			int temp = data;
+			ADD_PAGE
+			WRITE(data, temp = READ(data));
+			nz = (temp >> 1);
+			c = temp << 8;
+			pc++;
+			WRITE(data, (uint8_t)nz);
+			goto loop;
+		}
 
 	case 0x6E: // ROR abs
 		data = page [pc];
-	ror_abs: {
+	{
 		int temp = data;
 		ADD_PAGE
-		if ( opcode == 0x5E || opcode == 0x7E ) READ( data - ( temp & 0x100 ) );
 		WRITE( data, temp = READ( data ) );
 		nz = ((c >> 1) & 0x80) | (temp >> 1);
 		c = temp << 8;
-		goto rotate_common;
+		pc++;
+		WRITE(data, (uint8_t)nz);
+		goto loop;
 	}
 	
 	case 0x76: // ROR zp,x
-		data = page [pc];
-		data = uint8_t (data + x);
+		data = uint8_t (page [pc] + x);
 		goto ror_zp;
 	
 	case 0x56: // LSR zp,x
-		data = page [pc];
-		data = uint8_t (data + x);
-		c = 0;
-		goto ror_zp;
+		data = uint8_t (page [pc] + x);
+		{
+			int temp = READ_LOW(data);
+			nz = (temp >> 1);
+			c = temp << 8;
+			pc++;
+			WRITE_LOW(data, nz);
+			goto loop;
+		}
 
 	case 0x46: // LSR zp
 		data = page [pc];
-		c = 0;
-		goto ror_zp;
+		{
+			int temp = READ_LOW(data);
+			nz = (temp >> 1);
+			c = temp << 8;
+			pc++;
+			WRITE_LOW(data, nz);
+			goto loop;
+		}
 
 	case 0x66: // ROR zp
 		data = page [pc];
@@ -924,7 +984,9 @@ imm##op:                                \
 		int temp = READ_LOW( data );
 		nz = ((c >> 1) & 0x80) | (temp >> 1);
 		c = temp << 8;
-		goto write_nz_zp;
+		pc++;
+		WRITE_LOW(data, nz);
+		goto loop;
 	}
 	
 	case 0x36: // ROL zp,x
@@ -933,22 +995,27 @@ imm##op:                                \
 		goto rol_zp;
 	
 	case 0x16: // ASL zp,x
-		data = page [pc];
-		data = uint8_t (data + x);
-		c = 0;
-		goto rol_zp;
+		data = uint8_t (page [pc] + x);
+		nz = (c = READ_LOW(data) << 1);
+		pc++;
+		WRITE_LOW(data, nz);
+		goto loop;
 
 	case 0x06: // ASL zp
 		data = page [pc];
-		c = 0;
-		goto rol_zp;
+		nz = (c = READ_LOW(data) << 1);
+		WRITE_LOW(data, nz);
+		pc++;
+		goto loop;
 
 	case 0x26: // ROL zp
 		data = page [pc];
 	rol_zp:
 		nz = (c >> 8) & 1;
 		nz |= (c = READ_LOW( data ) << 1);
-		goto write_nz_zp;
+		WRITE_LOW(data, nz);
+		pc++;
+		goto loop;
 	
 // Increment/decrement
 
@@ -957,28 +1024,30 @@ imm##op:                                \
 	case 0x88: INC_DEC_XY( y, -1 ) // DEY
 	
 	case 0xF6: // INC zp,x
-		data = page [pc];
-		data = uint8_t (data + x);
-		nz = 1;
-		goto add_nz_zp;
+		data = uint8_t (page[pc] + x);
+		nz = READ_LOW(data) + 1;
+		WRITE_LOW(data, nz);
+		pc++;
+		goto loop;
 
 	case 0xE6: // INC zp
 		data = page [pc];
-		nz = 1;
-		goto add_nz_zp;
+		nz = READ_LOW(data) + 1;
+		WRITE_LOW(data, nz);
+		pc++;
+		goto loop;
 	
 	case 0xD6: // DEC zp,x
 		data = page [pc];
 		data = uint8_t (data + x);
-		nz = -1;
-		goto add_nz_zp;
+		nz =  READ_LOW(data) - 1;
+		WRITE_LOW(data, nz);
+		pc++;
+		goto loop;
 
 	case 0xC6: // DEC zp
 		data = page [pc];
-		nz = -1;
-	add_nz_zp:
-		nz += READ_LOW( data );
-	write_nz_zp:
+		nz = READ_LOW( data ) - 1;
 		pc++;
 		WRITE_LOW( data, nz );
 		goto loop;
@@ -987,36 +1056,53 @@ imm##op:                                \
 		data = page [pc];
 		int temp = data + x;
 		data = x + GET_ADDR();
-		READ( data - ( temp & 0x100 ) );
-		goto inc_ptr;
+		READ_NO_RETURN( data - ( temp & 0x100 ) );
+		{
+			int temp;
+			WRITE(data, temp = READ(data));
+			nz = temp + 1;
+			WRITE(data, (uint8_t)nz);
+		}
+		pc += 2;
+		goto loop;
 	}
 	
 	case 0xEE: // INC abs
 		data = GET_ADDR();
-	inc_ptr:
-		nz = 1;
-		goto inc_common;
+		{
+			int temp;
+			WRITE(data, temp = READ(data));
+			nz = temp + 1;
+			WRITE(data, (uint8_t)nz);
+		}
+		pc += 2;
+		goto loop;
 	
 	case 0xDE: { // DEC abs,x
 		data = page [pc];
 		int temp = data + x;
 		data = x + GET_ADDR();
-		READ( data - ( temp & 0x100 ) );
-		goto dec_ptr;
+		READ_NO_RETURN( data - ( temp & 0x100 ) );
+		{
+			int temp;
+			WRITE(data, temp = READ(data));
+			nz = temp - 1;
+			WRITE(data, (uint8_t)nz);
+		}
+		pc += 2;
+		goto loop;
 	}
 	
 	case 0xCE: // DEC abs
 		data = GET_ADDR();
-	dec_ptr:
-		nz = -1;
-	inc_common: {
+	{
 		int temp;
 		WRITE( data, temp = READ( data ) );
-		nz += temp;
-		pc += 2;
+		nz = temp -1;
 		WRITE( data, (uint8_t) nz );
-		goto loop;
 	}
+		pc += 2;
+		goto loop;
 		
 // Transfer
 
@@ -1025,7 +1111,7 @@ imm##op:                                \
 		goto loop;
 
 	case 0x8A: // TXA
-		a = nz = x;
+		nz = a = x;
 		goto loop;
 
 	case 0x9A: // TXS
@@ -1170,8 +1256,8 @@ imm##op:                                \
 		HANDLE_PAGE_CROSSING( data );
 		int addr = GET_ADDR() + x;
 		if ( data & 0x100 )
-			READ( addr - 0x100 );
-		READ( addr );
+			READ_NO_RETURN( addr - 0x100 );
+		READ_NO_RETURN( addr );
 	}
 	case 0x0C: // SKW
 		pc++;
@@ -1238,101 +1324,104 @@ imm##op:                                \
 		goto loop;
 
 	case 0x4B: // ALR
-		data = page [pc];
-		nz = (a &= data);
+		a &= page [pc];
+		c = a << 8;
+		a = nz = a >> 1;
 		pc++;
-		goto lsr_a;
+		goto loop;
 
 	case 0x0B: // ANC
 	case 0x2B:
-		data = page[pc];
-		nz = a &= data;
+		nz = a &= page[pc];
 		c = a << 1;
 		pc++;
 		goto loop;
 
 	case 0x6B: // ARR
-		data = page[pc];
-		nz = a = uint8_t( ( ( data & a ) >> 1 ) | ( ( c >> 1 ) & 0x80 ) );
+		nz = a = uint8_t( ( ( page[pc] & a ) >> 1 ) | ( ( c >> 1 ) & 0x80 ) );
 		c = a << 2;
 		status = ( status & ~st_v ) | ( ( a ^ a << 1 ) & st_v );
 		pc++;
 		goto loop;
 
 	case 0xAB: // LXA
-		data = page [pc];
-		nz = x = a = data;
+		nz = x = a = page [pc];
 		pc++;
 		goto loop;
 
 	case 0xA3: // LAX
 		data = page [pc];
 		IND_X
-		goto lax_ptr;
+		nz = x = a = READ(data);
+		pc++;
+		goto loop;
 
 	case 0xB3:
 		data = page[pc];
 		IND_Y(true,true)
-		goto lax_ptr;
+		nz = x = a = READ(data);
+		pc++;
+		goto loop;
 
 	case 0xB7:
-		data = page[pc];
-		data = uint8_t (data + y);
-		data = READ_LOW(data);
-		goto lax_imm;
+		data = uint8_t (page[pc] + y);
+		nz = x = a = READ_LOW(data);
+		pc++;
+		goto loop;
 
 	case 0xA7:
-		data = page[pc];
-		data = READ_LOW( data );
-		goto lax_imm;
+		nz = x = a = READ_LOW( page[pc] );
+		pc++;
+		goto loop;
 
 	case 0xBF: {
-		data = page[pc];
-		data += y;
+		data = page[pc] + y;
 		HANDLE_PAGE_CROSSING( data );
 		int temp = data;
 		ADD_PAGE;
 		if ( temp & 0x100 )
-			READ( data - 0x100 );
-		goto lax_ptr;
+			READ_NO_RETURN( data - 0x100 );
+		nz = x = a = READ(data);
+		pc++;
+		goto loop;
 	}
 
 	case 0xAF:
 		data = page[pc];
 		ADD_PAGE
-
-	lax_ptr:
-		data = READ( data );
-	lax_imm:
-		nz = x = a = data;
+		nz = x = a = READ( data );
 		pc++;
 		goto loop;
 
 	case 0x83: // SAX
 		data = page[pc];
 		IND_X
-		goto sax_imm;
+		WRITE(data, a & x);
+		pc++;
+		goto loop;
 
 	case 0x97:
 		data = page[pc];
 		data = uint8_t (data + y);
-		goto sax_imm;
+		WRITE(data, a & x);
+		pc++;
+		goto loop;
 
 	case 0x8F:
 		data = page[pc];
 		ADD_PAGE
-		goto sax_imm;
+		WRITE(data, a & x);
+		pc++;
+		goto loop;
 
 	case 0x87:
 		data = page[pc];
-	sax_imm:
 		WRITE( data, a & x );
 		pc++;
 		goto loop;
 
 	case 0xCB: // SBX
-		data = page[pc];
-		data = ( a & x ) - data;
+		data = ( a & x ) - page[pc];
 		c = ( data <= 0xFF ) ? 0x100 : 0;
 		nz = x = uint8_t( data );
 		pc++;
@@ -1349,7 +1438,7 @@ imm##op:                                \
 		data = page[pc] + y;
 		int temp = data;
 		ADD_PAGE
-		READ( data - ( temp & 0x100 ) );
+		READ_NO_RETURN( data - ( temp & 0x100 ) );
 		pc++;
 		WRITE( data, uint8_t( a & x & ( ( data >> 8 ) + 1 ) ) );
 		goto loop;
@@ -1359,7 +1448,7 @@ imm##op:                                \
 		data = page[pc] + y;
 		int temp = data;
 		ADD_PAGE
-		READ( data - ( temp & 0x100 ) );
+		READ_NO_RETURN( data - ( temp & 0x100 ) );
 		pc++;
 		if ( !( temp & 0x100 ) )
 			WRITE( data, uint8_t( x & ( ( data >> 8 ) + 1 ) ) );
@@ -1370,7 +1459,7 @@ imm##op:                                \
 		data = page[pc] + x;
 		int temp = data;
 		ADD_PAGE
-		READ( data - ( temp & 0x100 ) );
+		READ_NO_RETURN( data - ( temp & 0x100 ) );
 		pc++;
 		if ( !( temp & 0x100) )
 			WRITE( data, uint8_t( y & ( ( data >> 8 ) + 1 ) ) );
@@ -1381,7 +1470,7 @@ imm##op:                                \
 		data = page[pc] + y;
 		int temp = data;
 		ADD_PAGE
-		READ( data - ( temp & 0x100 ) );
+		READ_NO_RETURN( data - ( temp & 0x100 ) );
 		pc++;
 		SET_SP( a & x );
 		WRITE( data, uint8_t( a & x & ( ( data >> 8 ) + 1 ) ) );
@@ -1394,7 +1483,7 @@ imm##op:                                \
 		int temp = data;
 		ADD_PAGE
 		if ( temp & 0x100 )
-			READ( data - 0x100 );
+			READ_NO_RETURN( data - 0x100 );
 		pc++;
 		a = GET_SP();
 		x = a &= READ( data );
