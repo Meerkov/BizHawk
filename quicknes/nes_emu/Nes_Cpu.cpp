@@ -187,6 +187,7 @@ Nes_Cpu::result_t Nes_Cpu::run( nes_time_t end )
 		nz |= ~in & st_z;                       \
 	} while ( 0 )
 
+	unsigned data;
 	int status;
 	int c;  // carry set if (c & 0x100) != 0
 	int nz; // Z set if (nz & 0xFF) == 0, N set if (nz & 0x880) != 0
@@ -194,24 +195,26 @@ Nes_Cpu::result_t Nes_Cpu::run( nes_time_t end )
 		int temp = r.status;
 		SET_STATUS( temp );
 	}
-	
-	goto loop;
-dec_clock_loop:
-	clock_count--;
+
+	uint8_t opcode;
 loop:
-	
+
+#if !defined (NDEBUG)
 	assert( (unsigned) GET_SP() < 0x100 );
 	assert( (unsigned) a < 0x100 );
 	assert( (unsigned) x < 0x100 );
 	assert( (unsigned) y < 0x100 );
+#endif
 
 	uint8_t const* page = code_map [pc >> page_bits];
-	unsigned opcode = page [pc];
+	opcode = page [pc];
 	pc++;
 	
 	if ( clock_count >= clock_limit )
 		goto stop;
 
+
+#if !defined (NDEBUG)
 	if (tracecb)
 	{
 		unsigned int scratch[7];
@@ -224,9 +227,9 @@ loop:
 		scratch[6] = opcode;
 		tracecb(scratch);
 	}
+#endif
 	
 	clock_count += clock_table [opcode];
-	unsigned data;
 	
 	switch (opcode)
 	{
@@ -239,7 +242,7 @@ loop:
 //#define GET_OPERAND( addr )   READ_PROG( addr )
 //#define GET_OPERAND16( addr ) READ_PROG16( addr )
 
-#define ADD_PAGE        (pc++, data += 0x100 * GET_OPERAND( pc ));
+#define ADD_PAGE        (pc++, data += GET_OPERAND( pc )<<8);
 #define GET_ADDR()      GET_OPERAND16( pc )
 
 #define HANDLE_PAGE_CROSSING( lsb ) clock_count += (lsb) >> 8;
@@ -251,7 +254,7 @@ loop:
 		data = temp + 0x100 * READ_LOW( uint8_t (data + 1) );   \
 		if (c) HANDLE_PAGE_CROSSING( temp );                    \
 		if (!(r) || (temp & 0x100))                             \
-			READ_NO_RETURN( data - ( temp & 0x100 ) );                    \
+			READ_NO_RETURN( data - ( temp & 0x100 ) );          \
 	}
 
 #define IND_X {                                                 \
@@ -340,10 +343,9 @@ imm##op:                                \
 {                           \
 	pc++;                   \
 	int offset = (BOOST::int8_t) data;  \
+	if ( !(cond) ) {clock_count--; goto loop;} \
 	int extra_clock = (pc & 0xFF) + offset; \
-	if ( !(cond) ) goto dec_clock_loop; \
-	pc += offset;       \
-	pc = BOOST::uint16_t( pc ); \
+	pc = BOOST::uint16_t( pc + offset); \
 	clock_count += (extra_clock >> 8) & 1;  \
 	goto loop;          \
 }
@@ -351,13 +353,12 @@ imm##op:                                \
 // Often-Used
 
 	case 0xB5: // LDA zp,x
-		data = uint8_t (page[pc] + x);
-		a = nz = READ_LOW(data);
+		nz = a = low_mem[uint8_t (page[pc] + x)];
 		pc++;
 		goto loop;
 
 	case 0xA5: // LDA zp
-		a = nz = READ_LOW( page[pc] );
+		nz = a = low_mem[ page[pc] ];
 		pc++;
 		goto loop;
 	
@@ -386,9 +387,9 @@ imm##op:                                \
 	
 	ARITH_ADDR_MODES( 0xC5 ) // CMP
 		nz = a - data;
-		pc++;
 		c = ~nz;
 		nz &= 0xFF;
+		pc++;
 		goto loop;
 	
 	case 0x30: // BMI
@@ -400,14 +401,12 @@ imm##op:                                \
 		BRANCH( !(uint8_t) nz );
 	
 	case 0x95: // STA zp,x
-		data = uint8_t (page[pc] + x);
-		WRITE_LOW(data, a);
+		WRITE_LOW(uint8_t (page[pc] + x), a);
 		pc++;
 		goto loop;
 
 	case 0x85: // STA zp
-		data = page [pc];
-		WRITE_LOW( data, a );
+		WRITE_LOW( page [pc], a );
 		pc++;
 		goto loop;
 	
@@ -448,9 +447,9 @@ imm##op:                                \
 	case 0x9D: // STA abs,X
 		data = page [pc] + x;
 	{
-		int temp = data;
+		int temp = data & 0x100;
 		ADD_PAGE
-		READ_NO_RETURN( data - ( temp & 0x100 ) );
+		READ_NO_RETURN( data - temp );
 		WRITE(data, a);
 	}
 		pc++;
@@ -502,16 +501,17 @@ imm##op:                                \
 		{
 			unsigned msb = GET_OPERAND(pc + 1);
 			// indexed common
-			pc+=2;
+			pc += 2;
 			HANDLE_PAGE_CROSSING(data);
-			int temp = data;
-			data += msb * 0x100;
-			a = nz = READ_PROG(BOOST::uint16_t(data));
-			if ((unsigned)(data - 0x2000) >= 0x6000)
-				goto loop;
-			if (temp & 0x100)
-				READ_NO_RETURN(data - 0x100);
-			a = nz = READ(data);
+			unsigned temp = data + msb*0x100;
+			if ((unsigned)(temp - 0x2000) < 0x6000) {
+				if (data & 0x100)
+					READ_NO_RETURN(temp - 0x100);
+				a = nz = READ(temp);
+			}
+			else {
+				a = nz = READ_PROG(BOOST::uint16_t(temp));
+			}
 		}
 		goto loop;
 
@@ -521,14 +521,15 @@ imm##op:                                \
 		// indexed common
 		pc+=2;
 		HANDLE_PAGE_CROSSING( data );
-		int temp = data;
-		data += msb * 0x100;
-		a = nz = READ_PROG( BOOST::uint16_t( data ) );
-		if ( (unsigned) (data - 0x2000) >= 0x6000 )
-			goto loop;
-		if ( temp & 0x100 )
-			READ_NO_RETURN( data - 0x100 );
-		a = nz = READ( data );
+		int temp = data + msb * 0x100;
+		if ((unsigned)(temp - 0x2000) < 0x6000) {
+			if (data & 0x100)
+				READ_NO_RETURN(temp - 0x100);
+			a = nz = READ(temp);
+		}
+		else {
+			a = nz = READ_PROG(BOOST::uint16_t(temp));
+		}
 		goto loop;
 	}
 	
@@ -539,14 +540,15 @@ imm##op:                                \
 		// indexed common
 		pc++;
 		HANDLE_PAGE_CROSSING( data );
-		int temp = data;
-		data += msb * 0x100;
-		a = nz = READ_PROG( BOOST::uint16_t( data ) );
-		if ( (unsigned) (data - 0x2000) >= 0x6000 )
-			goto loop;
-		if ( temp & 0x100 )
-			READ_NO_RETURN( data - 0x100 );
-		a = nz = READ( data );
+		int temp = data + msb * 0x100;
+		if ((unsigned)(temp - 0x2000) < 0x6000) {
+			if (data & 0x100)
+				READ_NO_RETURN(temp - 0x100);
+			a = nz = READ(temp);
+		}
+		else {
+			a = nz = READ_PROG(BOOST::uint16_t(temp));
+		}
 		goto loop;
 	}
 	
@@ -570,12 +572,32 @@ imm##op:                                \
 		BRANCH( status & st_v )
 	
 	case 0xB0: // BCS
-		data = page [pc];
-		BRANCH( c & 0x100 )
+		{
+			int offset = (BOOST::int8_t) page [pc];
+			pc++;
+			if (!(c & 0x100)) {
+				clock_count--;
+				goto loop;
+			}
+			int extra_clock = (pc & 0xFF) + offset;
+			pc = BOOST::uint16_t(pc+offset);
+			clock_count += (extra_clock >> 8) & 1;
+		}
+		goto loop;
 	
 	case 0x90: // BCC
-		data = page [pc];
-		BRANCH( !(c & 0x100) )
+		{
+			int offset = (BOOST::int8_t) page[pc];
+			pc++;
+			if (c & 0x100) {
+				clock_count--;
+				goto loop;
+			}
+			int extra_clock = (pc & 0xFF) + offset;
+			pc = BOOST::uint16_t(pc+offset);
+			clock_count += (extra_clock >> 8) & 1;
+		}
+		goto loop;
 	
 // Load/store
 	

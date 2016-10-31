@@ -48,10 +48,10 @@ int Nes_Core::cpu_read(nes_addr_t addr, nes_time_t time)
 
 void Nes_Core::cpu_read_clock_only(nes_addr_t addr, nes_time_t time)
 {
-	if (!(addr & 0xE000))
+	if (addr > 0x7FFF)
 		return;
 
-	if (addr > 0x7FFF)
+	if (!(addr & 0xE000))
 		return;
 
 	time += cpu_time_offset;
@@ -72,15 +72,15 @@ void Nes_Core::cpu_read_clock_only(nes_addr_t addr, nes_time_t time)
 		return;
 	}
 
+#ifndef NDEBUG
+
 	if (addr < sram_readable) {
-		impl->sram[addr & (impl_t::sram_size - 1)];
 		return;
 	}
 
 	if (addr < lrom_readable)
 		return;
 
-#ifndef NDEBUG
 	log_unmapped(addr);
 #endif
 
