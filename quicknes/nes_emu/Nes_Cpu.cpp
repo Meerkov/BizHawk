@@ -352,42 +352,36 @@ loop:
 		data = 0x100 * READ_LOW( uint8_t (temp + 1) ) + READ_LOW( uint8_t (temp) ); \
 	}
 
-
-
-#define BRANCH( cond )      \
-{                           \
-	pc++;                   \
-	if ( !(cond) ) {clock_count--; goto loop;} \
-	int offset = (BOOST::int8_t) data;  \
-	int extra_clock = (pc & 0xFF) + offset; \
-	pc = BOOST::uint16_t( pc + offset); \
-	clock_count += (extra_clock >> 8) & 1;  \
-	goto loop;          \
-}
-
 // Often-Used
 
 	case 0xB5: // LDA zp,x
-		pc++;
-		nz = a = low_mem[uint8_t (page[pc] + x)];
-		pc++;
+		nz = a = low_mem[uint8_t (page[pc+1] + x)];
+		pc+=2;
 		goto loop;
 
 	case 0xA5: // LDA zp
-		pc++;
-		nz = a = low_mem[ page[pc] ];
-		pc++;
+		nz = a = low_mem[ page[pc+1] ];
+		pc+=2;
 		goto loop;
 
 	case 0xD0: // BNE
-		pc++;
-		data = page [pc];
-		BRANCH( (uint8_t) nz );
+		{
+			pc+=2;
+			if (!((uint8_t)nz)) { 
+				clock_count--; 
+				goto loop; 
+			}
+			data = page [pc-1];
+			int offset = (BOOST::int8_t) data;
+			int extra_clock = (pc & 0xFF) + offset;
+			pc = BOOST::uint16_t(pc + offset);
+			clock_count += (extra_clock >> 8) & 1;
+			goto loop;
+		}
 	
 	case 0x20: { // JSR
-		pc++;
-		int temp = pc + 1;
-		pc = GET_OPERAND16( pc );
+		int temp = pc + 2;
+		pc = GET_OPERAND16( pc+1 );
 		WRITE_LOW( 0x100 | (sp - 1), temp >> 8 );
 		sp = (sp - 2) | 0x100;
 		WRITE_LOW( sp, temp );
@@ -395,8 +389,7 @@ loop:
 	}
 	
 	case 0x4C: // JMP abs
-		pc++;
-		pc = GET_OPERAND16( pc );
+		pc = GET_OPERAND16( pc+1 );
 		goto loop;
 	
 	case 0xE8: // INX
@@ -404,9 +397,18 @@ loop:
 		INC_DEC_XY( x, 1 )
 	
 	case 0x10: // BPL
-		pc++;
-		data = page [pc];
-		BRANCH( !IS_NEG )
+		{
+			pc+=2;
+			if (IS_NEG) { 
+				clock_count--; 
+				goto loop; 
+			}
+			int offset = (BOOST::int8_t) page [pc-1];
+			int extra_clock = (pc & 0xFF) + offset;
+			pc = BOOST::uint16_t(pc + offset);
+			clock_count += (extra_clock >> 8) & 1;
+			goto loop;
+		}
 	
 // ARITH_ADDR_MODES( 0xC5 )          
 case 0xC5 - 0x04: /* (ind,x) */   
@@ -444,14 +446,12 @@ case 0xC5 + 0x10: /* zp,X */
 	pc++;
 	goto loop;
 
-case 0xC5 + 0x00: /* zp */          
-	pc++;      
-	data = READ_LOW( page [pc] );       
+case 0xC5 + 0x00: /* zp */
 	// CMP
-	nz = a - data;
+	nz = a - READ_LOW( page [pc+1] );   
 	c = ~nz;
 	nz &= 0xFF;
-	pc++;
+	pc+=2;
 	goto loop;
 
 case 0xC5 + 0x14: /* abs,Y */      
@@ -500,36 +500,52 @@ case 0xC5 + 0x08: /* abs */
 	pc++;
 	goto loop;
 
-case 0xC5 + 0x04: /* imm */       
-	pc++;        
-	data = page [pc];                                                
+case 0xC5 + 0x04: /* imm */                           
 	// CMP
-	nz = a - data;
+	nz = a - page [pc+1];   
 	c = ~nz;
 	nz &= 0xFF;
-	pc++;
+	pc+=2;
 	goto loop;
 	
 	case 0x30: // BMI
-		pc++;
-		data = page [pc];
-		BRANCH( IS_NEG )
+		{
+			pc+=2;
+			if (!(IS_NEG)) {
+				clock_count--; 
+				goto loop;
+			}
+			data = page [pc-1];
+			int offset = (BOOST::int8_t) data;
+			int extra_clock = (pc & 0xFF) + offset;
+			pc = BOOST::uint16_t(pc + offset);
+			clock_count += (extra_clock >> 8) & 1;
+			goto loop;
+		}
 	
 	case 0xF0: // BEQ
-		pc++;
-		data = page [pc];
-		BRANCH( !(uint8_t) nz );
+		{
+			pc+=2;
+			if (!(!(uint8_t)nz)) {
+				clock_count--;
+				goto loop;
+			}
+			data = page [pc-1];
+			int offset = (BOOST::int8_t) data;
+			int extra_clock = (pc & 0xFF) + offset;
+			pc = BOOST::uint16_t(pc + offset);
+			clock_count += (extra_clock >> 8) & 1;
+			goto loop;
+		}
 	
 	case 0x95: // STA zp,x
-		pc++;
-		WRITE_LOW(uint8_t (page[pc] + x), a);
-		pc++;
+		WRITE_LOW(uint8_t (page[pc+1] + x), a);
+		pc+=2;
 		goto loop;
 
 	case 0x85: // STA zp
-		pc++;
-		WRITE_LOW( page [pc], a );
-		pc++;
+		WRITE_LOW( page [pc+1], a );
+		pc+=2;
 		goto loop;
 	
 	case 0xC8: // INY
@@ -593,9 +609,8 @@ case 0xC5 + 0x04: /* imm */
 		goto loop;
 	
 	case 0xA9: // LDA #imm
-		pc++;
-		nz = a = page [pc];
-		pc++;
+		nz = a = page [pc+1];
+		pc+=2;
 		goto loop;
 	
 #if 0
@@ -699,39 +714,56 @@ case 0xC5 + 0x04: /* imm */
 // Branch
 
 	case 0x50: // BVC
-		pc++;
-		data = page [pc];
-		BRANCH( !(status & st_v) )
+		{
+			pc+=2;
+			if (!(!(status & st_v))) {
+				clock_count--;
+				goto loop;
+			}
+			data = page [pc-1];
+			int offset = (BOOST::int8_t) data;
+			int extra_clock = (pc & 0xFF) + offset;
+			pc = BOOST::uint16_t(pc + offset);
+			clock_count += (extra_clock >> 8) & 1;
+			goto loop;
+		}
 	
 	case 0x70: // BVS
-		pc++;
-		data = page [pc];
-		BRANCH( status & st_v )
+		{
+			pc+=2;
+			if (!(status & st_v )) {
+				clock_count--;
+				goto loop;
+			}
+			int offset = (BOOST::int8_t) page [pc-1];
+			int extra_clock = (pc & 0xFF) + offset;
+			pc = BOOST::uint16_t(pc + offset);
+			clock_count += (extra_clock >> 8) & 1;
+			goto loop;
+		}
 	
 	case 0xB0: // BCS
 		{
-			pc++;
-			int offset = (BOOST::int8_t) page [pc];
-			pc++;
+			pc+=2;
 			if (!(c & 0x100)) {
 				clock_count--;
 				goto loop;
 			}
+			int offset = (BOOST::int8_t) page [pc-1];
 			int extra_clock = (pc & 0xFF) + offset;
 			pc = BOOST::uint16_t(pc+offset);
 			clock_count += (extra_clock >> 8) & 1;
+			goto loop;
 		}
-		goto loop;
 	
 	case 0x90: // BCC
 		{
-			pc++;
-			int offset = (BOOST::int8_t) page[pc];
-			pc++;
+			pc += 2;
 			if (c & 0x100) {
 				clock_count--;
 				goto loop;
 			}
+			int offset = (BOOST::int8_t) page[pc-1];
 			int extra_clock = (pc & 0xFF) + offset;
 			pc = BOOST::uint16_t(pc+offset);
 			clock_count += (extra_clock >> 8) & 1;
@@ -741,67 +773,53 @@ case 0xC5 + 0x04: /* imm */
 // Load/store
 	
 	case 0x94: // STY zp,x
-		pc++;
-		WRITE_LOW( uint8_t(page[pc] + x) , y);
-		pc++;
+		WRITE_LOW( uint8_t(page[pc+1] + x) , y);
+		pc+=2;
 		goto loop;
 
 	case 0x84: // STY zp
-		pc++;
-		WRITE_LOW(page[pc], y );
-		pc++;
+		WRITE_LOW(page[pc+1], y );
+		pc+=2;
 		goto loop;
 	
 	case 0x96: // STX zp,y
-		pc++;
-		data = uint8_t (page[pc] + y);
-		WRITE_LOW(data, x);
-		pc++;
+		WRITE_LOW(uint8_t (page[pc+1] + y), x);
+		pc+=2;
 		goto loop;
 
 	case 0x86: // STX zp
-		pc++;
-		WRITE_LOW(page[pc], x );
-		pc++;
+		WRITE_LOW(page[pc+1], x );
+		pc+=2;
 		goto loop;
 	
 	case 0xB6: // LDX zp,y
-		pc++;
-		data = uint8_t (page[pc] + y);
-		nz = x = READ_LOW(data);
-		pc++;
+		nz = x = READ_LOW(uint8_t (page[pc+1] + y));
+		pc+=2;
 		goto loop;
 
 	case 0xA6: // LDX zp
-		pc++;
-		nz = x = READ_LOW( page[pc] );
-		pc++;
+		nz = x = READ_LOW( page[pc+1] );
+		pc+=2;
 		goto loop;
 
 	case 0xA2: // LDX #imm
-		pc++;
-		nz = x = page[pc];
-		pc++;
+		nz = x = page[pc+1];
+		pc+=2;
 		goto loop;
 	
 	case 0xB4: // LDY zp,x
-		pc++;
-		data = uint8_t (page[pc] + x);
-		nz = y = READ_LOW(data);
-		pc++;
+		nz = y = READ_LOW(uint8_t (page[pc+1] + x));
+		pc+=2;
 		goto loop;
 
 	case 0xA4: // LDY zp
-		pc++;
-		data = page [pc];
-		nz = y = READ_LOW(data);
-		pc++;
+		nz = y = READ_LOW(page [pc+1]);
+		pc+=2;
 		goto loop;
 
 	case 0xA0: // LDY #imm
-		pc++;
-		nz = y = page[pc];
-		pc++;
+		nz = y = page[pc+1];
+		pc+=2;
 		goto loop;
 	
 	case 0x91: // STA (ind),Y
@@ -936,12 +954,10 @@ case 0xC5 + 0x04: /* imm */
 		goto loop;
 
 	case 0xC0: // CPY #imm
-		pc++;
-		data = page [pc];
-		nz = y - data;
+		nz = y - page [pc+1];
 		c = ~nz;
 		nz &= 0xFF;
-		pc++;
+		pc+=2;
 		goto loop;
 	
 // Logical
@@ -1291,18 +1307,16 @@ case 0xE5 + 0x10: /* zp,X */
 		goto loop;
 	}
 
-case 0xE5 + 0x00: /* zp */               
-		pc++;            
-	data = READ_LOW( page [pc] );       
+case 0xE5 + 0x00: /* zp */
+	data = (READ_LOW( page [pc+1] ))^0xFF;       
 	// SBC
-	data ^= 0xFF;
 	{
 		int carry = (c >> 8) & 1;
 		int ov = (a ^ 0x80) + carry + (BOOST::int8_t) data; // sign-extend
 		status &= ~st_v;
 		status |= (ov >> 2) & 0x40;
 		c = nz = a + data + carry;
-		pc++;
+		pc+=2;
 		a = (uint8_t)nz;
 		goto loop;
 	}
@@ -1912,7 +1926,6 @@ case 0x65 + 0x04: /* imm */
 		goto loop;
 		
 	case 0x40: // RTI
-		pc++;
 		{
 			int temp = READ_LOW( sp );
 			pc   = READ_LOW( 0x100 | (sp - 0xFF) );
@@ -1962,8 +1975,7 @@ case 0x65 + 0x04: /* imm */
 		goto loop;
 	
 	case 0x00: { // BRK
-		pc++;           
-		pc++;
+		pc+=2;
 		WRITE_LOW( 0x100 | (sp - 1), pc >> 8 );
 		WRITE_LOW( 0x100 | (sp - 2), pc );
 		int temp;
@@ -2049,14 +2061,12 @@ case 0x65 + 0x04: /* imm */
 		READ_NO_RETURN( addr );
 	}
 	case 0x0C: // SKW
-		pc++;
-		pc+=2;
+		pc+=3;
 		goto loop;
 
 	case 0x74: case 0x04: case 0x14: case 0x34: case 0x44: case 0x54: case 0x64: // SKB
 	case 0x80: case 0x82: case 0x89: case 0xC2: case 0xD4: case 0xE2: case 0xF4:
-		pc++;
-		pc++;
+		pc+=2;
 		goto loop;
 
 	case 0xEA: case 0x1A: case 0x3A: case 0x5A: case 0x7A: case 0xDA: case 0xFA: // NOP
