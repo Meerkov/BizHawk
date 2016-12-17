@@ -484,25 +484,53 @@ namespace BizHawk.Client.EmuHawk
 			BringToFront();
 
 			bool do_updates = true;
+			Random rnd = new Random();
 			int count = 0;
-			while(true)
+
+			Global.Config.ClockThrottle = false;
+			if(Global.Game.IsNullInstance) {
+				LoadRomFromRecent("I://NES/GoodNES3.14/GoodNES_3.14_goodmerged2/Super Mario Bros. 3/Super Mario Bros. 3 (U) (PRG1) [!].nes");
+			}
+
+			while (true)
 			{
 				if (Global.Config.DispSpeedupFeatures != 0 || count >= 1000)
 				{
 					do_updates = true;
 					count = 0;
+					Global.Config.DispSpeedupFeatures = 2;
 				}
 				else
 				{
+					do_updates = true;
 					count++;
 				}
+				
+
+				// Original Stuff
 
 				if (do_updates)
 				{
-					Input.Instance.Update();
-
 					// handle events and dispatch as a hotkey action, or a hotkey button, or an input button
 					ProcessInput();
+
+					// ROBOT CONTROLLER
+					foreach (KeyValuePair<string,string> kvp in Global.ActiveController.MappingList())
+					{
+						ControllerInputCoalescer conInput = Global.ControllerInputCoalescer as ControllerInputCoalescer;
+						Input.InputEvent ie = new Input.InputEvent();
+						ie.LogicalButton = new Input.LogicalButton(kvp.Key, 0);
+						if(rnd.NextDouble()<0.1) {
+							ie.EventType = Input.InputEventType.Press;
+						} else {
+							ie.EventType = Input.InputEventType.Release;
+						}
+						
+						HotkeyCoalescer.Receive(ie);
+						conInput.Receive(ie);
+					}
+					// END ROBOT
+
 					Global.ClientControls.LatchFromPhysical(HotkeyCoalescer);
 
 					Global.ActiveController.LatchFromPhysical(Global.ControllerInputCoalescer);
@@ -557,6 +585,7 @@ namespace BizHawk.Client.EmuHawk
 				{
 					Thread.Sleep(0);
 				}
+				Global.Config.DispSpeedupFeatures = 0;
 			}
 
 			Shutdown();
@@ -3266,7 +3295,7 @@ namespace BizHawk.Client.EmuHawk
 			}
 		}
 
-		private int? LoadArhiveChooser(HawkFile file)
+		private int? LoadArchiveChooser(HawkFile file)
 		{
 			var ac = new ArchiveChooser(file);
 			if (ac.ShowDialog(this) == DialogResult.OK)
@@ -3380,7 +3409,7 @@ namespace BizHawk.Client.EmuHawk
 
 				var loader = new RomLoader
 				{
-					ChooseArchive = LoadArhiveChooser,
+					ChooseArchive = LoadArchiveChooser,
 					ChoosePlatform = ChoosePlatformForRom,
 					Deterministic = deterministic,
 					MessageCallback = GlobalWin.OSD.AddMessage,
