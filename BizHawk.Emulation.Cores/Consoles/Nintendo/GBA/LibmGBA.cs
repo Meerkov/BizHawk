@@ -16,13 +16,10 @@ namespace BizHawk.Emulation.Cores.Nintendo.GBA
 		public static extern void BizDestroy(IntPtr ctx);
 
 		[DllImport(dll, CallingConvention = cc)]
-		public static extern IntPtr BizCreate(byte[] bios, byte[] data, int length, [In]OverrideInfo dbinfo);
+		public static extern IntPtr BizCreate(byte[] bios, byte[] data, int length, [In]OverrideInfo dbinfo, bool skipBios);
 
 		[DllImport(dll, CallingConvention = cc)]
 		public static extern void BizReset(IntPtr ctx);
-
-		[DllImport(dll, CallingConvention = cc)]
-		public static extern void BizSkipBios(IntPtr ctx);
 
 		public enum SaveType : int
 		{
@@ -80,14 +77,29 @@ namespace BizHawk.Emulation.Cores.Nintendo.GBA
 		public static extern void BizGetMemoryAreas(IntPtr ctx, [Out]MemoryAreas dst);
 
 		[DllImport(dll, CallingConvention = cc)]
-		public static extern int BizGetSaveRam(IntPtr ctx, byte[] dest);
+		public static extern int BizGetSaveRam(IntPtr ctx, byte[] dest, int maxsize);
 		[DllImport(dll, CallingConvention = cc)]
-		public static extern bool BizPutSaveRam(IntPtr ctx, byte[] src, int size);
+		public static extern void BizPutSaveRam(IntPtr ctx, byte[] src, int size);
 
+		/// <summary>
+		/// start a savestate operation
+		/// </summary>
+		/// <param name="ctx"></param>
+		/// <param name="p">private parameter to be passed to BizFinishGetState</param>
+		/// <param name="size">size of buffer to be allocated for BizFinishGetState</param>
+		/// <returns>if false, operation failed and BizFinishGetState should not be called</returns>
 		[DllImport(dll, CallingConvention = cc)]
-		public static extern int BizGetStateMaxSize(IntPtr ctx);
+		public static extern bool BizStartGetState(IntPtr ctx, ref IntPtr p, ref int size);
+
+		/// <summary>
+		/// finish a savestate operation.  if StartGetState returned true, this must be called else memory leaks
+		/// </summary>
+		/// <param name="p">returned by BizStartGetState</param>
+		/// <param name="dest">buffer of length size</param>
+		/// <param name="size">returned by BizStartGetState</param>
 		[DllImport(dll, CallingConvention = cc)]
-		public static extern int BizGetState(IntPtr ctx, byte[] dest, int maxsize);
+		public static extern void BizFinishGetState(IntPtr p, byte[] dest, int size);
+
 		[DllImport(dll, CallingConvention = cc)]
 		public static extern bool BizPutState(IntPtr ctx, byte[] src, int size);
 
@@ -103,5 +115,19 @@ namespace BizHawk.Emulation.Cores.Nintendo.GBA
 
 		[DllImport(dll, CallingConvention = cc)]
 		public static extern void BizSetLayerMask(IntPtr ctx, Layers mask);
+
+		[Flags]
+		public enum Sounds : int
+		{
+			CH0 = 1,
+			CH1 = 2,
+			CH2 = 4,
+			CH3 = 8,
+			CHA = 16,
+			CHB = 32
+		}
+
+		[DllImport(dll, CallingConvention = cc)]
+		public static extern void BizSetSoundMask(IntPtr ctx, Sounds mask);
 	}
 }

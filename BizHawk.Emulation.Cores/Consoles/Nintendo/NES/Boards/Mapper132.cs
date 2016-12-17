@@ -39,6 +39,12 @@ namespace BizHawk.Emulation.Cores.Nintendo.NES
 			return true;
 		}
 
+		public override void Dispose()
+		{
+			reg.Dispose();
+			base.Dispose();
+		}
+
 		public void sync(byte value)
 		{
 			prg=reg[2]>>2;
@@ -87,7 +93,15 @@ namespace BizHawk.Emulation.Cores.Nintendo.NES
 
 		public override byte ReadPRG(int addr)
 		{
-			return ROM[addr + (prg << 15)];
+			// Xiao Ma Li (Ch) has 16k prg (mapped to both 0x8000 and 0xC000)
+			if (Cart.prg_size == 16)
+			{
+				return ROM[addr & 0x3FFF];
+			}
+			else
+			{
+				return ROM[addr + ((prg & prg_mask) << 15)];
+			}
 		}
 
 		public override byte ReadPPU(int addr)
