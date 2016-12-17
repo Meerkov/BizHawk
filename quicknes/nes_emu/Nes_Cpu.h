@@ -42,7 +42,7 @@ public:
 		BOOST::uint8_t status;
 		BOOST::uint8_t sp;
 	};
-	//registers_t r;
+	//registers_t registers;
 	
 	// Reasons that run() returns
 	enum result_t {
@@ -83,7 +83,7 @@ private:
 	void (*tracecb)(unsigned int *dest);
 	
 public:
-	registers_t r;
+	registers_t registers;
 	
 	// low_mem is a full page size so it can be mapped with code_map
 	uint8_t low_mem [page_size > 0x800 ? page_size : 0x800];
@@ -97,7 +97,7 @@ inline BOOST::uint8_t* Nes_Cpu::get_code( nes_addr_t addr )
 inline void Nes_Cpu::update_clock_limit()
 {
 	nes_time_t t = end_time_;
-	if ( t > irq_time_ && !(r.status & irq_inhibit) )
+	if ( t > irq_time_ && !(registers.status & irq_inhibit) )
 		t = irq_time_;
 	clock_limit = t;
 }
@@ -123,8 +123,8 @@ inline void Nes_Cpu::reduce_limit( int offset )
 
 inline void Nes_Cpu::push_byte( int data )
 {
-	int sp = r.sp;
-	r.sp = (sp - 1) & 0xFF;
+	int sp = registers.sp;
+	registers.sp = (sp - 1) & 0xFF;
 	low_mem [0x100 + sp] = data;
 }
 

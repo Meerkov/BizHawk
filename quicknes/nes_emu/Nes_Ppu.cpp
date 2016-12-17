@@ -459,9 +459,11 @@ int Nes_Ppu::read( unsigned addr, nes_time_t time )
 
 void Nes_Ppu::write( nes_time_t time, unsigned addr, int data )
 {
+#ifndef NDEBUG
 	if ( addr & ~0x2007 )
 		dprintf( "Wrote to mirrored PPU register 0x%04X\n", addr );
-	
+#endif
+
 	switch ( addr & 7 )
 	{
 		case 0:{// control

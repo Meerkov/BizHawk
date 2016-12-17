@@ -8,15 +8,11 @@ int Nes_Core::cpu_read(nes_addr_t addr, nes_time_t time)
 {
 	//LOG_FREQ( "cpu_read", 16, addr >> 12 );
 
-	{
-		if (!(addr & 0xE000))
-			return cpu::low_mem[addr & 0x7FF];
-	}
+	if (!(addr & 0xE000))
+		return cpu::low_mem[addr & 0x7FF];
 
-	{
-		if (addr > 0x7FFF)
-			return *cpu::get_code(addr);
-	}
+	if (addr > 0x7FFF)
+		return *cpu::get_code(addr);
 
 	time += cpu_time_offset;
 	if (addr < 0x4000)

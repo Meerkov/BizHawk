@@ -47,12 +47,12 @@ inline void Nes_Cpu::set_code_page( int i, uint8_t const* p )
 
 void Nes_Cpu::reset( void const* unmapped_page )
 {
-	r.status = 0;
-	r.sp = 0;
-	r.pc = 0;
-	r.a = 0;
-	r.x = 0;
-	r.y = 0;
+	registers.status = 0;
+	registers.sp = 0;
+	registers.pc = 0;
+	registers.a = 0;
+	registers.x = 0;
+	registers.y = 0;
 	
 	error_count_ = 0;
 	clock_count = 0;
@@ -217,36 +217,30 @@ Nes_Cpu::result_t Nes_Cpu::run( nes_time_t end )
 #endif
 
 	// registers
-	unsigned pc = r.pc;
+	unsigned pc = registers.pc;
 	int sp;
-	SET_SP( r.sp );
-	int a = r.a;
-	int x = r.x;
-	int y = r.y;
+	SET_SP( registers.sp );
+	int a = registers.a;
+	int x = registers.x;
+	int y = registers.y;
+	int status_i;
+	int status_d;
+	int status_v;
 	
 	#define IS_NEG (nz & 0x880)
-	
-	#define CALC_STATUS( out ) do {             \
-		out = status & (st_v | st_d | st_i);    \
-		out |= (c >> 8) & st_c;                 \
-		if ( IS_NEG ) out |= st_n;              \
-		if ( !(nz & 0xFF) ) out |= st_z;        \
-	} while ( 0 )
-
-	#define SET_STATUS( in ) do {               \
-		status = in & (st_v | st_d | st_i);     \
-		c = in << 8;                            \
-		nz = (in << 4) & 0x800;                 \
-		nz |= ~in & st_z;                       \
-	} while ( 0 )
 
 	unsigned data;
-	int status;
-	int c;  // carry set if (c & 0x100) != 0
+	int c_flag;  // carry set if (c_flag & 0x100) != 0
 	int nz; // Z set if (nz & 0xFF) == 0, N set if (nz & 0x880) != 0
 	{
-		int temp = r.status;
-		SET_STATUS( temp );
+		int temp = registers.status;
+		status_d = temp;
+		status_v = temp << 2;
+		status_i = temp & st_i;
+
+		c_flag = temp << 8;
+		nz = (temp << 4) & 0x800;
+		nz |= ~temp & st_z;
 	}
 
 	uint8_t opcode;
@@ -313,7 +307,7 @@ loop:
 		scratch[2] = y;
 		scratch[3] = sp;
 		scratch[4] = pc;
-		scratch[5] = status;
+		scratch[5] = status_i | (status_v & st_v) | (status_d & st_d);
 		scratch[6] = opcode;
 		tracecb(scratch);
 	}
@@ -333,7 +327,6 @@ loop:
 //#define GET_OPERAND16( addr ) READ_PROG16( addr )
 
 #define ADD_PAGE        (pc++, data += GET_OPERAND( pc )<<8);
-#define GET_ADDR()      GET_OPERAND16( pc )
 
 #define HANDLE_PAGE_CROSSING( lsb ) clock_count += (lsb) >> 8;
 
@@ -355,158 +348,155 @@ loop:
 // Often-Used
 
 	case 0xB5: // LDA zp,x
-		nz = a = low_mem[uint8_t (page[pc+1] + x)];
-		pc+=2;
+		nz = a = low_mem[uint8_t(page[pc + 1] + x)];
+		pc += 2;
 		goto loop;
 
 	case 0xA5: // LDA zp
-		nz = a = low_mem[ page[pc+1] ];
-		pc+=2;
+		nz = a = low_mem[page[pc + 1]];
+		pc += 2;
 		goto loop;
 
 	case 0xD0: // BNE
-		{
-			pc+=2;
-			if (!((uint8_t)nz)) { 
-				clock_count--; 
-				goto loop; 
-			}
-			data = page [pc-1];
-			int offset = (BOOST::int8_t) data;
-			int extra_clock = (pc & 0xFF) + offset;
-			pc = BOOST::uint16_t(pc + offset);
-			clock_count += (extra_clock >> 8) & 1;
+	{
+		pc += 2;
+		if (!(nz & 0xFF)) {
+			clock_count--;
 			goto loop;
 		}
-	
-	case 0x20: { // JSR
-		int temp = pc + 2;
-		pc = GET_OPERAND16( pc+1 );
-		WRITE_LOW( 0x100 | (sp - 1), temp >> 8 );
-		sp = (sp - 2) | 0x100;
-		WRITE_LOW( sp, temp );
+		int offset = (BOOST::int8_t) page[pc - 1];
+		int extra_clock = (pc & 0xFF) + offset;
+		pc = BOOST::uint16_t(pc + offset);
+		clock_count += (extra_clock >> 8) & 1;
 		goto loop;
 	}
-	
-	case 0x4C: // JMP abs
-		pc = GET_OPERAND16( pc+1 );
+
+	case 0x20: { // JSR
+		int temp = pc + 2;
+		pc = GET_OPERAND16(pc + 1);
+		WRITE_LOW(0x100 | (sp - 1), temp >> 8);
+		sp = (sp - 2) | 0x100;
+		WRITE_LOW(sp, temp);
 		goto loop;
-	
+	}
+
+	case 0x4C: // JMP abs
+		pc = GET_OPERAND16(pc + 1);
+		goto loop;
+
 	case 0xE8: // INX
-		pc++; 
-		INC_DEC_XY( x, 1 )
-	
+		pc++;
+		INC_DEC_XY(x, 1)
+
 	case 0x10: // BPL
 		{
-			pc+=2;
-			if (IS_NEG) { 
-				clock_count--; 
-				goto loop; 
+			pc += 2;
+			if (IS_NEG) {
+				clock_count--;
+				goto loop;
 			}
-			int offset = (BOOST::int8_t) page [pc-1];
+			int offset = (BOOST::int8_t) page[pc - 1];
 			int extra_clock = (pc & 0xFF) + offset;
 			pc = BOOST::uint16_t(pc + offset);
 			clock_count += (extra_clock >> 8) & 1;
 			goto loop;
 		}
-	
-// ARITH_ADDR_MODES( 0xC5 )          
-case 0xC5 - 0x04: /* (ind,x) */   
-	pc++;        
-	data = page [pc];                   
-	IND_X                               
-		data = READ(data);
-	// CMP
-	nz = a - data;
-	c = ~nz;
-	nz &= 0xFF;
-	pc++;
-	goto loop;
 
-case 0xC5 + 0x0C: /* (ind),y */ 
-	pc++;          
-	data = page [pc];                   
-	IND_Y(true,true)                    
-		data = READ(data);
-	// CMP
-	nz = a - data;
-	c = ~nz;
-	nz &= 0xFF;
-	pc++;
-	goto loop;
+		// ARITH_ADDR_MODES( 0xC5 )          
+	case 0xC5 - 0x04: /* (ind,x) */
+		{
+			int temp = page[pc + 1] + x;
+			data = 0x100 * low_mem[uint8_t(temp + 1)] + low_mem[uint8_t(temp)];
+		}
+		// CMP
+		nz = a - READ(data);
+		c_flag = ~nz;
+		nz &= 0xFF;
+		pc += 2;
+		goto loop;
 
-case 0xC5 + 0x10: /* zp,X */          
-	pc++;    
-	data = uint8_t (page [pc] + x);     
-	data = READ_LOW( data );            
-	// CMP
-	nz = a - data;
-	c = ~nz;
-	nz &= 0xFF;
-	pc++;
-	goto loop;
+	case 0xC5 + 0x0C: /* (ind),y */ 
+		{
+			data = page[pc + 1];
+			int temp = READ_LOW(data) + y;
+			data = temp + 0x100 * READ_LOW(uint8_t(data + 1));
+			HANDLE_PAGE_CROSSING(temp);
+			if (temp & 0x100)
+				READ_NO_RETURN(data - 0x100);
+		}
+		// CMP
+		nz = a - READ(data);
+		c_flag = ~nz;
+		nz &= 0xFF;
+		pc+=2;
+		goto loop;
 
-case 0xC5 + 0x00: /* zp */
-	// CMP
-	nz = a - READ_LOW( page [pc+1] );   
-	c = ~nz;
-	nz &= 0xFF;
-	pc+=2;
-	goto loop;
+	case 0xC5 + 0x10: /* zp,X */
+		// CMP
+		nz = a - READ_LOW( uint8_t (page [pc+1] + x) );
+		c_flag = ~nz;
+		nz &= 0xFF;
+		pc+=2;
+		goto loop;
 
-case 0xC5 + 0x14: /* abs,Y */      
-	pc++;       
-	data = page [pc] + y;               
-	HANDLE_PAGE_CROSSING(data);
-	{int temp = data;
-	ADD_PAGE
-		if (temp & 0x100)
-			READ_NO_RETURN(data - 0x100);
-	data = READ(data);
-	// CMP
-	nz = a - data;
-	c = ~nz;
-	nz &= 0xFF;
-	pc++;
-	goto loop; }
+	case 0xC5 + 0x00: /* zp */
+		// CMP
+		nz = a - READ_LOW( page [pc+1] );   
+		c_flag = ~nz;
+		nz &= 0xFF;
+		pc+=2;
+		goto loop;
 
-case 0xC5 + 0x18: /* abs,X */    
-	pc++;         
-	data = page [pc] + x;               
-{                              
-	HANDLE_PAGE_CROSSING( data );       
-	int temp = data;                    
-	ADD_PAGE                            
-	if ( temp & 0x100 )                 
-		 READ_NO_RETURN( data - 0x100 );      
-	data = READ(data);
-	// CMP
-	nz = a - data;
-	c = ~nz;
-	nz &= 0xFF;
-	pc++;
-	goto loop;
-}          
+	case 0xC5 + 0x14: /* abs,Y */
+		data = page [pc+1] + y;               
+		HANDLE_PAGE_CROSSING(data);
+		{
+			int temp = data;
+			data += GET_OPERAND(pc+2) << 8;
+			if (temp & 0x100)
+				READ_NO_RETURN(data - 0x100);
+		}
+		// CMP
+		nz = a - READ(data);
+		c_flag = ~nz;
+		nz &= 0xFF;
+		pc+=3;
+		goto loop;
 
-case 0xC5 + 0x08: /* abs */        
-	pc++;       
-	data = page [pc];                   
-	ADD_PAGE                                                          
-	data = READ( data );                
-	// CMP
-	nz = a - data;
-	c = ~nz;
-	nz &= 0xFF;
-	pc++;
-	goto loop;
+	case 0xC5 + 0x18: /* abs,X */  
+		data = page [pc+1] + x;               
+	{                              
+		HANDLE_PAGE_CROSSING( data );    
+		{
+			int temp = data;
+			data += GET_OPERAND(pc + 2) << 8;
+			if (temp & 0x100)
+				READ_NO_RETURN(data - 0x100);
+		}
+		// CMP
+		nz = a - READ(data);
+		c_flag = ~nz;
+		nz &= 0xFF;
+		pc+=3;
+		goto loop;
+	}          
 
-case 0xC5 + 0x04: /* imm */                           
-	// CMP
-	nz = a - page [pc+1];   
-	c = ~nz;
-	nz &= 0xFF;
-	pc+=2;
-	goto loop;
+	case 0xC5 + 0x08: /* abs */
+		data = page [pc+1] + (page[pc + 2] << 8);
+		// CMP
+		nz = a - READ( data );  
+		c_flag = ~nz;
+		nz &= 0xFF;
+		pc+=3;
+		goto loop;
+
+	case 0xC5 + 0x04: /* imm */                           
+		// CMP
+		nz = a - page [pc+1];   
+		c_flag = ~nz;
+		nz &= 0xFF;
+		pc+=2;
+		goto loop;
 	
 	case 0x30: // BMI
 		{
@@ -515,8 +505,7 @@ case 0xC5 + 0x04: /* imm */
 				clock_count--; 
 				goto loop;
 			}
-			data = page [pc-1];
-			int offset = (BOOST::int8_t) data;
+			int offset = (BOOST::int8_t) page [pc-1];
 			int extra_clock = (pc & 0xFF) + offset;
 			pc = BOOST::uint16_t(pc + offset);
 			clock_count += (extra_clock >> 8) & 1;
@@ -526,12 +515,11 @@ case 0xC5 + 0x04: /* imm */
 	case 0xF0: // BEQ
 		{
 			pc+=2;
-			if (!(!(uint8_t)nz)) {
+			if (nz & 0xFF) {
 				clock_count--;
 				goto loop;
 			}
-			data = page [pc-1];
-			int offset = (BOOST::int8_t) data;
+			int offset = (BOOST::int8_t) page [pc-1];
 			int extra_clock = (pc & 0xFF) + offset;
 			pc = BOOST::uint16_t(pc + offset);
 			clock_count += (extra_clock >> 8) & 1;
@@ -563,49 +551,43 @@ case 0xC5 + 0x04: /* imm */
 		goto loop;
 	
 	case 0xAD:{// LDA abs
-		pc++;
-		unsigned addr = GET_ADDR();
+		unsigned addr = GET_OPERAND16(pc+1);
 		a = nz = READ_LIKELY_PPU( addr );
-		pc += 2;
+		pc += 3;
 		goto loop;
 	}
 	
 	case 0x60: // RTS
-		pc++;
 		pc = 1 + READ_LOW( sp ) + READ_LOW( 0x100 | (sp - 0xFF) ) * 0x100;
 		sp = (sp - 0xFE) | 0x100;
 		goto loop;
 
 	case 0x99: // STA abs,Y
-		pc++;
-		data = page [pc] + y; 
+		data = page [pc+1] + y; 
 		{
 			int temp = data;
-			ADD_PAGE
-			READ_NO_RETURN(data - (temp & 0x100));
+			data += GET_OPERAND(pc+2) << 8;
+			READ_NO_RETURN((data - (temp & 0x100)));
 		}
 		WRITE(data, a);
-		pc++;
+		pc+=3;
 		goto loop;
 	
 	case 0x9D: // STA abs,X
-		pc++;
-		data = page [pc] + x;
-	{
-		int temp = data & 0x100;
-		ADD_PAGE
-		READ_NO_RETURN( data - temp );
-		WRITE(data, a);
-	}
-		pc++;
+		data = page [pc+1] + x;
+		{
+			int temp = data & 0x100;
+			data += GET_OPERAND(pc + 2) << 8;
+			READ_NO_RETURN( data - temp );
+			WRITE(data, a);
+		}
+		pc+=3;
 		goto loop;
 
 	case 0x8D: // STA abs
-		pc++;
-		data = page [pc];
-		ADD_PAGE
+		data = page [pc+1] + (GET_OPERAND(pc + 2) << 8);
 		WRITE( data, a );
-		pc++;
+		pc+=3;
 		goto loop;
 	
 	case 0xA9: // LDA #imm
@@ -643,12 +625,11 @@ case 0xC5 + 0x04: /* imm */
 	// optimization of most commonly used memory read instructions
 	
 	case 0xB9:// LDA abs,Y
-		pc++;
-		data = page [pc] + y;
+		data = page [pc+1] + y;
 		{
-			unsigned msb = GET_OPERAND(pc + 1);
+			unsigned msb = GET_OPERAND(pc + 2);
 			// indexed common
-			pc += 2;
+			pc += 3;
 			HANDLE_PAGE_CROSSING(data);
 			unsigned temp = data + msb*0x100;
 			if ((unsigned)(temp - 0x2000) < 0x6000) {
@@ -663,9 +644,27 @@ case 0xC5 + 0x04: /* imm */
 		goto loop;
 
 	case 0xBD:{// LDA abs,X
-		pc++;
-		data = page [pc] + x;
-		unsigned msb = GET_OPERAND( pc+1 );
+		data = page [pc+1] + x;
+		unsigned msb = GET_OPERAND( pc+2 );
+		// indexed common
+		pc+=3;
+		HANDLE_PAGE_CROSSING( data );
+		int temp = data + msb * 0x100;
+		if ((unsigned)(temp - 0x2000) < 0x6000) {
+			if (data & 0x100)
+				READ_NO_RETURN(temp - 0x100);
+			a = nz = READ(temp);
+		}
+		else {
+			a = nz = READ_PROG(BOOST::uint16_t(temp));
+		}
+		goto loop;
+	}
+	
+	case 0xB1:{// LDA (ind),Y
+		data = page [pc+1];
+		unsigned msb = READ_LOW( (uint8_t) (data + 1) );
+		data = READ_LOW( data ) + y;
 		// indexed common
 		pc+=2;
 		HANDLE_PAGE_CROSSING( data );
@@ -681,32 +680,11 @@ case 0xC5 + 0x04: /* imm */
 		goto loop;
 	}
 	
-	case 0xB1:{// LDA (ind),Y
-		pc++;
-		data = page [pc];
-		unsigned msb = READ_LOW( (uint8_t) (data + 1) );
-		data = READ_LOW( data ) + y;
-		// indexed common
-		pc++;
-		HANDLE_PAGE_CROSSING( data );
-		int temp = data + msb * 0x100;
-		if ((unsigned)(temp - 0x2000) < 0x6000) {
-			if (data & 0x100)
-				READ_NO_RETURN(temp - 0x100);
-			a = nz = READ(temp);
-		}
-		else {
-			a = nz = READ_PROG(BOOST::uint16_t(temp));
-		}
-		goto loop;
-	}
-	
 	case 0xA1: // LDA (ind,X)
-		pc++;
-		data = page [pc];
+		data = page [pc+1];
 		IND_X
 		a = nz = READ( data );
-		pc++;
+		pc+=2;
 		goto loop;
 	
 #endif
@@ -714,55 +692,54 @@ case 0xC5 + 0x04: /* imm */
 // Branch
 
 	case 0x50: // BVC
-		{
-			pc+=2;
-			if (!(!(status & st_v))) {
-				clock_count--;
-				goto loop;
-			}
-			data = page [pc-1];
-			int offset = (BOOST::int8_t) data;
-			int extra_clock = (pc & 0xFF) + offset;
-			pc = BOOST::uint16_t(pc + offset);
-			clock_count += (extra_clock >> 8) & 1;
+		pc+=2;
+		if ((status_v >> 2) & st_v) {
+			clock_count--;
 			goto loop;
 		}
-	
-	case 0x70: // BVS
 		{
-			pc+=2;
-			if (!(status & st_v )) {
-				clock_count--;
-				goto loop;
-			}
 			int offset = (BOOST::int8_t) page [pc-1];
 			int extra_clock = (pc & 0xFF) + offset;
 			pc = BOOST::uint16_t(pc + offset);
 			clock_count += (extra_clock >> 8) & 1;
+		}
+		goto loop;
+	
+	case 0x70: // BVS
+		pc+=2;
+		if (!((status_v >> 2) & st_v)) {
+			clock_count--;
 			goto loop;
 		}
+		{
+			int offset = (BOOST::int8_t) page [pc-1];
+			int extra_clock = (pc & 0xFF) + offset;
+			pc = BOOST::uint16_t(pc + offset);
+			clock_count += (extra_clock >> 8) & 1;
+		}
+		goto loop;
 	
 	case 0xB0: // BCS
+		pc+=2;
+		if (!(c_flag & 0x100)) {
+			clock_count--;
+			goto loop;
+		}
 		{
-			pc+=2;
-			if (!(c & 0x100)) {
-				clock_count--;
-				goto loop;
-			}
 			int offset = (BOOST::int8_t) page [pc-1];
 			int extra_clock = (pc & 0xFF) + offset;
 			pc = BOOST::uint16_t(pc+offset);
 			clock_count += (extra_clock >> 8) & 1;
-			goto loop;
 		}
+		goto loop;
 	
 	case 0x90: // BCC
+		pc += 2;
+		if (c_flag & 0x100) {
+			clock_count--;
+			goto loop;
+		}
 		{
-			pc += 2;
-			if (c & 0x100) {
-				clock_count--;
-				goto loop;
-			}
 			int offset = (BOOST::int8_t) page[pc-1];
 			int extra_clock = (pc & 0xFF) + offset;
 			pc = BOOST::uint16_t(pc+offset);
@@ -823,486 +800,407 @@ case 0xC5 + 0x04: /* imm */
 		goto loop;
 	
 	case 0x91: // STA (ind),Y
-		pc++;
-		data = page [pc];
+		data = page [pc+1];
 		IND_Y(false,false)
 		WRITE(data, a);
-		pc++;
+		pc+=2;
 		goto loop;
 	
 	case 0x81: // STA (ind,X)
-		pc++;
-		data = page [pc];
+		data = page [pc+1];
 		IND_X
 		WRITE(data, a);
-		pc++;
+		pc+=2;
 		goto loop;
 	
 	case 0xBC: // LDY abs,X
-		pc++;
-		data = page [pc] + x;
+		data = page [pc+1] + x;
 		HANDLE_PAGE_CROSSING( data );
 		{
-			unsigned addr = data + 0x100 * GET_OPERAND(pc+1);
+			unsigned addr = data + 0x100 * GET_OPERAND(pc+2);
 			if (data & 0x100)
 				READ_NO_RETURN(addr - 0x100);
 			y = nz = READ(addr);
-			pc+=2;
-			goto loop;
 		}
+		pc+=3;
+		goto loop;
 
 	case 0xAC:{// LDY abs
-		pc++;
-		data = page [pc];
-		unsigned addr = data + 0x100 * GET_OPERAND( pc+1 );
+		data = page [pc+1];
+		unsigned addr = data + 0x100 * GET_OPERAND( pc+2 );
 		if ( data & 0x100 )
 			READ_NO_RETURN( addr - 0x100 );
 		y = nz = READ( addr );
-		pc+=2;
+		pc+=3;
 		goto loop;
 	}
 	
 	case 0xBE: // LDX abs,y
-		pc++;
-		data = page [pc] + y;
+		data = page [pc+1] + y;
 		HANDLE_PAGE_CROSSING( data );
 		{
-			unsigned addr = data + 0x100 * GET_OPERAND(pc+1);
+			unsigned addr = data + 0x100 * GET_OPERAND(pc+2);
 			if (data & 0x100)
 				READ_NO_RETURN(addr - 0x100);
 			x = nz = READ(addr);
-			pc+=2;
 		}
+		pc+=3;
 		goto loop;
 
 	case 0xAE:{// LDX abs
-		pc++;
-		data = page [pc];
-		unsigned addr = data + 0x100 * GET_OPERAND( pc+1 );
+		data = page [pc+1];
+		unsigned addr = data + 0x100 * GET_OPERAND( pc+2 );
 		if ( data & 0x100 )
 			READ_NO_RETURN( addr - 0x100 );
 		x = nz = READ( addr );
-		pc+=2;
+		pc+=3;
 		}
 		goto loop;
 	
 	case 0x8C: {// STY abs
-		pc++;
-		unsigned addr = GET_ADDR();
+		unsigned addr = GET_OPERAND16(pc+1);
 		WRITE(addr, y);
-		pc += 2;
+		pc += 3;
 		goto loop;
 	}
 	
 	case 0x8E: {// STX abs
-		pc++;
-		unsigned addr = GET_ADDR();
+		unsigned addr = GET_OPERAND16(pc+1);
 		WRITE( addr, x );
-		pc += 2;
+		pc += 3;
 		goto loop;
 	}
 
 // Compare
 
 	case 0xEC:{// CPX abs
-		pc++;
-		unsigned addr = GET_ADDR();
-		data = READ( addr );
-		nz = x - data;
-		c = ~nz;
+		nz = x - READ( GET_OPERAND16(pc+1) );
+		c_flag = ~nz;
 		nz &= 0xFF;
-		pc+=2;
+		pc+=3;
 		goto loop;
 	}
 	
 	case 0xE4: // CPX zp
-		pc++;
-		data = READ_LOW( page[pc] );
+		data = READ_LOW( page[pc+1] );
 		nz = x - data;
-		c = ~nz;
+		c_flag = ~nz;
 		nz &= 0xFF;
-		pc++;
+		pc+=2;
 		goto loop;
 
 	case 0xE0: // CPX #imm
-		pc++;
-		data = page [pc];
+		data = page [pc+1];
 		nz = x - data;
-		c = ~nz;
+		c_flag = ~nz;
 		nz &= 0xFF;
-		pc++;
+		pc+=2;
 		goto loop;
 	
 	case 0xCC:{// CPY abs
-		pc++;
-		unsigned addr = GET_ADDR();
-		data = READ( addr );
-		nz = y - data;
-		c = ~nz;
+		unsigned addr = GET_OPERAND16(pc+1);
+		nz = y - READ( addr );
+		c_flag = ~nz;
 		nz &= 0xFF;
-		pc+=2;
+		pc+=3;
 		goto loop;
 	}
 	
 	case 0xC4: // CPY zp
-		pc++;
-		data = READ_LOW( page [pc] );
-		nz = y - data;
-		c = ~nz;
+		nz = y - READ_LOW( page [pc+1] );
+		c_flag = ~nz;
 		nz &= 0xFF;
-		pc++;
+		pc+=2;
 		goto loop;
 
 	case 0xC0: // CPY #imm
 		nz = y - page [pc+1];
-		c = ~nz;
+		c_flag = ~nz;
 		nz &= 0xFF;
 		pc+=2;
 		goto loop;
 	
-// Logical
-// ARITH_ADDR_MODES( 0x25 )          
-case 0x25 - 0x04: /* (ind,x) */    
-		pc++;       
-	data = page [pc];                   
-	IND_X                               
-		data = READ(data);
-	// AND
-	nz = (a &= data);
-	pc++;
-	goto loop;
+	// Logical
+	// ARITH_ADDR_MODES( 0x25 )          
+	case 0x25 - 0x04: /* (ind,x) */
+		data = page [pc+1];                   
+		IND_X         
+		// AND
+		nz = (a &= READ(data));
+		pc+=2;
+		goto loop;
 
-case 0x25 + 0x0C: /* (ind),y */       
-		pc++;    
-	data = page [pc];                   
-	IND_Y(true,true)                    
-		data = READ(data);
-	// AND
-	nz = (a &= data);
-	pc++;
-	goto loop;
+	case 0x25 + 0x0C: /* (ind),y */       
+			pc++;    
+		data = page [pc+1];                   
+		IND_Y(true,true)
+		// AND
+		nz = (a &= READ(data));
+		pc+=2;
+		goto loop;
 
-case 0x25 + 0x10: /* zp,X */       
-		pc++;       
-	data = uint8_t (page [pc] + x);     
-	data = READ_LOW( data );            
-	// AND
-	nz = (a &= data);
-	pc++;
-	goto loop;
+	case 0x25 + 0x10: /* zp,X */
+		// AND
+		nz = (a &= READ_LOW( uint8_t (page [pc+1] + x) ));
+		pc+=2;
+		goto loop;
 
-case 0x25 + 0x00: /* zp */        
-		pc++;        
-	data = READ_LOW( page [pc] );       
-	// AND
-	nz = (a &= data);
-	pc++;
-	goto loop;
+	case 0x25 + 0x00: /* zp */
+		// AND
+		nz = (a &= READ_LOW( page [pc+1] ));
+		pc+=2;
+		goto loop;
 
-case 0x25 + 0x14: /* abs,Y */      
-		pc++;       
-	data = page [pc] + y;               
-	{
-		HANDLE_PAGE_CROSSING(data);
-		int temp = data;
-		ADD_PAGE
+	case 0x25 + 0x14: /* abs,Y */
+		data = page [pc+1] + y;               
+		{
+			HANDLE_PAGE_CROSSING(data);
+			int temp = data;
+			data += GET_OPERAND(pc+2) << 8;
 			if (temp & 0x100)
 				READ_NO_RETURN(data - 0x100);
-		data = READ(data);
-		// AND
-		nz = (a &= data);
-		pc++;
+			// AND
+			nz = (a &= READ(data));
+		}
+		pc+=3;
 		goto loop;
-	}
 
-case 0x25 + 0x18: /* abs,X */   
-		pc++;          
-	data = page [pc] + x;               
- {                              
-	HANDLE_PAGE_CROSSING( data );       
-	int temp = data;                    
-	ADD_PAGE                            
-	if ( temp & 0x100 )                 
-		 READ_NO_RETURN( data - 0x100 );      
-	data = READ(data);
-	// AND
-	nz = (a &= data);
-	pc++;
-	goto loop;
-}          
+	case 0x25 + 0x18: /* abs,X */
+		data = page [pc+1] + x;               
+		{                              
+			HANDLE_PAGE_CROSSING( data );       
+			int temp = data;
+			data += GET_OPERAND(pc + 2) << 8;
+			if ( temp & 0x100 )                 
+				 READ_NO_RETURN( data - 0x100 );
+			// AND
+			nz = (a &= READ(data));
+		}      
+		pc+=3;
+		goto loop;    
 
-case 0x25 + 0x08: /* abs */    
-		pc++;           
-	data = page [pc];                   
-	ADD_PAGE                                                          
-	data = READ( data );                
-	// AND
-	nz = (a &= data);
-	pc++;
-	goto loop;
+	case 0x25 + 0x08: /* abs */
+		data = page [pc+1];
+		data += GET_OPERAND(pc + 2) << 8;
+		// AND
+		nz = (a &= READ( data ));
+		pc+=3;
+		goto loop;
 
-case 0x25 + 0x04: /* imm */    
-		pc++;           
-	data = page [pc];                                                 
-	// AND
-	nz = (a &= data);
-	pc++;
-	goto loop;
+	case 0x25 + 0x04: /* imm */                               
+		// AND
+		nz = (a &= page [pc+1]);
+		pc+=2;
+		goto loop;
 
 // ARITH_ADDR_MODES( 0x45 )          
-case 0x45 - 0x04: /* (ind,x) */    
-		pc++;                  
-	data = page [pc];                   
-	IND_X                               
-		data = READ(data);
+case 0x45 - 0x04: /* (ind,x) */
+	data = page [pc+1];                   
+	IND_X     
 	// EOR
-	nz = (a ^= data);
-	pc++;
+	nz = (a ^= READ(data));
+	pc+=2;
 	goto loop;
 
-case 0x45 + 0x0C: /* (ind),y */    
-		pc++;                  
-	data = page [pc];                   
-	IND_Y(true,true)                    
-		data = READ(data);
+case 0x45 + 0x0C: /* (ind),y */   
+	data = page [pc+1];                   
+	IND_Y(true,true)
 	// EOR
-	nz = (a ^= data);
-	pc++;
+	nz = (a ^= READ(data));
+	pc+=2;
 	goto loop;
 
-case 0x45 + 0x10: /* zp,X */         
-		pc++;                
-	data = uint8_t (page [pc] + x);     
-	data = READ_LOW( data );            
+case 0x45 + 0x10: /* zp,X */ 
+	data = uint8_t (page [pc+1] + x);
 	// EOR
-	nz = (a ^= data);
-	pc++;
+	nz = (a ^= READ_LOW( data ));
+	pc+=2;
 	goto loop;
 
-case 0x45 + 0x00: /* zp */         
-		pc++;                  
-	data = READ_LOW( page [pc] );       
+case 0x45 + 0x00: /* zp */ 
 	// EOR
-	nz = (a ^= data);
-	pc++;
+	nz = (a ^= READ_LOW( page [pc+1] ));
+	pc+=2;
 	goto loop;
 
-case 0x45 + 0x14: /* abs,Y */    
-		pc++;                    
-	data = page [pc] + y;               
+case 0x45 + 0x14: /* abs,Y*/
+	data = page[pc+1] + y;
 	{
 		HANDLE_PAGE_CROSSING(data);
 		int temp = data;
-		ADD_PAGE
-			if (temp & 0x100)
-				READ_NO_RETURN(data - 0x100);
-		data = READ(data);
+		data += GET_OPERAND(pc+2) << 8;
+		if (temp & 0x100)
+			READ_NO_RETURN(data - 0x100);
 		// EOR
-		nz = (a ^= data);
-		pc++;
-		goto loop;
+		nz = (a ^= READ(data));
 	}
+	pc+=3;
+	goto loop;
 
-case 0x45 + 0x18: /* abs,X */     
-		pc++;                   
-	data = page [pc] + x;               
+case 0x45 + 0x18: /* abs,X */    
+	data = page [pc+1] + x;               
 {                              
 	HANDLE_PAGE_CROSSING( data );       
 	int temp = data;                    
-	ADD_PAGE                            
+	data += GET_OPERAND(pc + 2) << 8;
 	if ( temp & 0x100 )                 
-		 READ_NO_RETURN( data - 0x100 );      
-	data = READ(data);
+		 READ_NO_RETURN( data - 0x100 );
 	// EOR
-	nz = (a ^= data);
-	pc++;
+	nz = (a ^= READ(data));
+	pc+=3;
 	goto loop;
 }           
 
-case 0x45 + 0x08: /* abs */   
-		pc++;                       
-	data = page [pc];                   
-	ADD_PAGE                           
-	data = READ( data );                
+case 0x45 + 0x08: /* abs */        
+	data = page [pc+1] + (GET_OPERAND(pc + 2) << 8);
 	// EOR
-	nz = (a ^= data);
-	pc++;
+	nz = (a ^= READ( data ));
+	pc+=3;
 	goto loop;
 
-case 0x45 + 0x04: /* imm */     
-		pc++;                     
-	data = page [pc];                             
-	// EOR
-	nz = (a ^= data);
-	pc++;
-	goto loop;
+	case 0x45 + 0x04: /* imm */           
+		// EOR
+		nz = (a ^= page [pc+1]);
+		pc+=2;
+		goto loop;
 
 // ARITH_ADDR_MODES( 0x05 )          
 case 0x05 - 0x04: /* (ind,x) */   
-		pc++;                   
-	data = page [pc];                   
-	IND_X                               
-		data = READ(data);
+	data = page [pc+1];                   
+	IND_X       
 	// ORA
-	nz = (a |= data);
-	pc++;
+	nz = (a |= READ(data));
+	pc+=2;
 	goto loop;
 
-case 0x05 + 0x0C: /* (ind),y */      
-		pc++;                
-	data = page [pc];                   
-	IND_Y(true,true)                    
-		data = READ(data);
+case 0x05 + 0x0C: /* (ind),y */ 
+	data = page [pc+1];                   
+	IND_Y(true,true)  
 	// ORA
-	nz = (a |= data);
-	pc++;
+	nz = (a |= READ(data));
+	pc+=2;
 	goto loop;
 
-case 0x05 + 0x10: /* zp,X */         
-		pc++;                
-	data = uint8_t (page [pc] + x);     
-	data = READ_LOW( data );            
+case 0x05 + 0x10: /* zp,X */
+	data = uint8_t (page [pc+1] + x);
 	// ORA
-	nz = (a |= data);
-	pc++;
+	nz = (a |= READ_LOW(data));
+	pc+=2;
 	goto loop;
 
-case 0x05 + 0x00: /* zp */       
-		pc++;                    
-	data = READ_LOW( page [pc] );       
+case 0x05 + 0x00: /* zp */
 	// ORA
-	nz = (a |= data);
-	pc++;
+	nz = (a |= READ_LOW(page[pc + 1]) );
+	pc+=2;
 	goto loop;
 
-case 0x05 + 0x14: /* abs,Y */     
-		pc++;                   
-	data = page [pc] + y;               
+case 0x05 + 0x14: /* abs,Y */    
+	data = page [pc+1] + y;               
 	{
 		HANDLE_PAGE_CROSSING(data);
 		int temp = data;
-		ADD_PAGE
-			if (temp & 0x100)
-				READ_NO_RETURN(data - 0x100);
-		data = READ(data);
+		data += GET_OPERAND(pc + 2) << 8;
+		if (temp & 0x100)
+			READ_NO_RETURN(data - 0x100);
 		// ORA
-		nz = (a |= data);
-		pc++;
-		goto loop;
+		nz = (a |= READ(data));
 	}
-
-case 0x05 + 0x18: /* abs,X */      
-		pc++;                  
-	data = page [pc] + x;               
-{                              
-	HANDLE_PAGE_CROSSING( data );       
-	int temp = data;                    
-	ADD_PAGE                            
-	if ( temp & 0x100 )                 
-		 READ_NO_RETURN( data - 0x100 );      
-	data = READ(data);
-	// ORA
-	nz = (a |= data);
-	pc++;
-	goto loop;
-}         
-
-case 0x05 + 0x08: /* abs */         
-		pc++;                 
-	data = page [pc];                   
-	ADD_PAGE                         
-	data = READ( data );                
-	// ORA
-	nz = (a |= data);
-	pc++;
+	pc+=3;
 	goto loop;
 
-case 0x05 + 0x04: /* imm */       
-		pc++;                   
-	data = page [pc];                    
+	case 0x05 + 0x18: /* abs,X */   
+		data = page [pc+1] + x;               
+	{                              
+		HANDLE_PAGE_CROSSING( data );       
+		int temp = data;
+		data += GET_OPERAND(pc + 2) << 8;
+		if ( temp & 0x100 )                 
+			 READ_NO_RETURN( data - 0x100 );
+		// ORA
+		nz = (a |= READ(data));
+	}        
+		pc+=3;
+		goto loop; 
+
+case 0x05 + 0x08: /* abs */   
+	data = page [pc+1] + (GET_OPERAND(pc + 2) << 8);
 	// ORA
-	nz = (a |= data);
-	pc++;
+	nz = (a |= READ( data ));
+	pc+=3;
 	goto loop;
+
+	case 0x05 + 0x04: /* imm */                  
+		// ORA
+		nz = (a |= page[pc + 1]);
+		pc+=2;
+		goto loop;
 	
 	case 0x2C:{// BIT abs
-		pc++;           
-		unsigned addr = GET_ADDR();
-		pc += 2;
-		status &= ~st_v;
+		unsigned addr = GET_OPERAND16(pc+1);
+		pc += 3;
 		nz = READ_LIKELY_PPU( addr );
-		status |= nz & st_v;
-		if ( a & nz )
-			goto loop;
-		// result must be zero, even if N bit is set
-		nz = nz << 4 & 0x800;
+		status_v = nz << 2;
+		if ( !(a & nz) )
+			// result must be zero, even if N bit is set
+			nz = nz << 4 & 0x800;
 	}
 		goto loop;
 	
 	case 0x24: // BIT zp
-		pc++;
-		data = page [pc];
+		data = page [pc+1];
 		nz = READ_LOW( data );
-		pc++;
-		status &= ~st_v;
-		status |= nz & st_v;
-		if ( a & nz )
-			goto loop;
-		// result must be zero, even if N bit is set
-		nz = nz << 4 & 0x800;
+		pc+=2;
+		status_v = nz << 2;
+		if ( !(a & nz) )
+			// result must be zero, even if N bit is set
+			nz = nz << 4 & 0x800;
 		goto loop;
 		
 // Add/subtract
 // ARITH_ADDR_MODES( 0xE5 )          
-case 0xE5 - 0x04: /* (ind,x) */
-		pc++;                      
-	data = page [pc];                   
-	IND_X                               
-		data = READ(data);
-	// SBC
-	data ^= 0xFF;
+case 0xE5 - 0x04: /* (ind,x) */              
+	data = page [pc+1];                   
 	{
-		int carry = (c >> 8) & 1;
-		int ov = (a ^ 0x80) + carry + (BOOST::int8_t) data; // sign-extend
-		status &= ~st_v;
-		status |= (ov >> 2) & 0x40;
-		c = nz = a + data + carry;
-		pc++;
+		int temp = data + x;
+		data = 0x100 * READ_LOW(uint8_t(temp + 1)) + READ_LOW(uint8_t(temp));
+	}
+	// SBC          
+	data = READ(data) ^ 0xFF;
+	{
+		int carry = (c_flag >> 8) & 1;
+		int ov = (a ^ st_n) + carry + (BOOST::int8_t) data; // sign-extend
+		status_v = ov;
+		c_flag = nz = a + data + carry;
+		pc+=2;
 		a = (uint8_t)nz;
 		goto loop;
 	}
 
-case 0xE5 + 0x0C: /* (ind),y */   
-		pc++;                   
-	data = page [pc];                   
+case 0xE5 + 0x0C: /* (ind),y */
+	data = page [pc+1];                   
 	IND_Y(true,true)                    
-		data = READ(data);
+	data = READ(data) ^ 0xFF;
 	// SBC
-	data ^= 0xFF;
 	{
-		int carry = (c >> 8) & 1;
-		int ov = (a ^ 0x80) + carry + (BOOST::int8_t) data; // sign-extend
-		status &= ~st_v;
-		status |= (ov >> 2) & 0x40;
-		c = nz = a + data + carry;
-		pc++;
+		int carry = (c_flag >> 8) & 1;
+		int ov = (a ^ st_n) + carry + (BOOST::int8_t) data; // sign-extend
+		status_v = ov;
+		c_flag = nz = a + data + carry;
+		pc+=2;
 		a = (uint8_t)nz;
-		goto loop;
 	}
+	goto loop;
 
-case 0xE5 + 0x10: /* zp,X */             
-		pc++;            
-	data = uint8_t (page [pc] + x);     
-	data = READ_LOW( data );            
+case 0xE5 + 0x10: /* zp,X */
+	data = uint8_t (page [pc+1] + x);     
+	data = READ_LOW( data ) ^ 0xFF;          
 	// SBC
-	data ^= 0xFF;
 	{
-		int carry = (c >> 8) & 1;
-		int ov = (a ^ 0x80) + carry + (BOOST::int8_t) data; // sign-extend
-		status &= ~st_v;
-		status |= (ov >> 2) & 0x40;
-		c = nz = a + data + carry;
-		pc++;
+		int carry = (c_flag >> 8) & 1;
+		int ov = (a ^ st_n) + carry + (BOOST::int8_t) data; // sign-extend
+		status_v = ov;
+		c_flag = nz = a + data + carry;
+		pc+=2;
 		a = (uint8_t)nz;
 		goto loop;
 	}
@@ -1311,484 +1209,419 @@ case 0xE5 + 0x00: /* zp */
 	data = (READ_LOW( page [pc+1] ))^0xFF;       
 	// SBC
 	{
-		int carry = (c >> 8) & 1;
-		int ov = (a ^ 0x80) + carry + (BOOST::int8_t) data; // sign-extend
-		status &= ~st_v;
-		status |= (ov >> 2) & 0x40;
-		c = nz = a + data + carry;
+		int carry = (c_flag >> 8) & 1;
+		int ov = (a ^ st_n) + carry + (BOOST::int8_t) data; // sign-extend
+		status_v = ov;
+		c_flag = nz = a + data + carry;
 		pc+=2;
 		a = (uint8_t)nz;
 		goto loop;
 	}
 
-case 0xE5 + 0x14: /* abs,Y */          
-		pc++;              
-	data = page [pc] + y;               
+case 0xE5 + 0x14: /* abs,Y */   
+	data = page [pc+1] + y;               
 	{
 		HANDLE_PAGE_CROSSING(data);
 		int temp = data;
-		ADD_PAGE
-			if (temp & 0x100)
-				READ_NO_RETURN(data - 0x100);
-		data = READ(data);
+		data += GET_OPERAND(pc+2) << 8;
+		if (temp & 0x100)
+			READ_NO_RETURN(data - 0x100);
+		data = READ(data) ^ 0xFF;
 		// SBC
-		data ^= 0xFF;
 		{
-			int carry = (c >> 8) & 1;
-			int ov = (a ^ 0x80) + carry + (BOOST::int8_t) data; // sign-extend
-			status &= ~st_v;
-			status |= (ov >> 2) & 0x40;
-			c = nz = a + data + carry;
-			pc++;
+			int carry = (c_flag >> 8) & 1;
+			int ov = (a ^ st_n) + carry + (BOOST::int8_t) data; // sign-extend
+			status_v = ov;
+			c_flag = nz = a + data + carry;
+			pc+=3;
 			a = (uint8_t)nz;
-			goto loop;
 		}
+		goto loop;
 	}
 
-case 0xE5 + 0x18: /* abs,X */      
-		pc++;                  
-	data = page [pc] + x;               
+case 0xE5 + 0x18: /* abs,X */   
+	data = page [pc+1] + x;               
 {                              
 	HANDLE_PAGE_CROSSING( data );       
-	int temp = data;                    
-	ADD_PAGE                            
+	int temp = data;
+	data += GET_OPERAND(pc + 2) << 8;
 	if ( temp & 0x100 )                 
 		 READ_NO_RETURN( data - 0x100 );      
-	data = READ(data);
+	data = READ(data) ^ 0xFF;
 	// SBC
-	data ^= 0xFF;
 	{
-		int carry = (c >> 8) & 1;
-		int ov = (a ^ 0x80) + carry + (BOOST::int8_t) data; // sign-extend
-		status &= ~st_v;
-		status |= (ov >> 2) & 0x40;
-		c = nz = a + data + carry;
-		pc++;
+		int carry = (c_flag >> 8) & 1;
+		int ov = (a ^ st_n) + carry + (BOOST::int8_t) data; // sign-extend
+		status_v = ov;
+		c_flag = nz = a + data + carry;
+		pc+=3;
 		a = (uint8_t)nz;
-		goto loop;
 	}
+	goto loop;
 }      
 
-case 0xE5 + 0x08: /* abs */              
-		pc++;            
-	data = page [pc];                   
-	ADD_PAGE                                                         
-	data = READ( data );                
+case 0xE5 + 0x08: /* abs */                
+	data = page [pc+1];
+	data += GET_OPERAND(pc + 2) << 8;
+	data = READ( data ) ^ 0xFF;                
 	// SBC
-	data ^= 0xFF;
 	{
-		int carry = (c >> 8) & 1;
-		int ov = (a ^ 0x80) + carry + (BOOST::int8_t) data; // sign-extend
-		status &= ~st_v;
-		status |= (ov >> 2) & 0x40;
-		c = nz = a + data + carry;
-		pc++;
+		int carry = (c_flag >> 8) & 1;
+		int ov = (a ^ st_n) + carry + (BOOST::int8_t) data; // sign-extend
+		status_v = ov;
+		c_flag = nz = a + data + carry;
+		pc+=3;
 		a = (uint8_t)nz;
 		goto loop;
 	}
 
-case 0xE5 + 0x04: /* imm */               
-		pc++;           
-	data = page [pc];                   
-  // SBC
-		data ^= 0xFF;
-		{
-			int carry = (c >> 8) & 1;
-			int ov = (a ^ 0x80) + carry + (BOOST::int8_t) data; // sign-extend
-			status &= ~st_v;
-			status |= (ov >> 2) & 0x40;
-			c = nz = a + data + carry;
-			pc++;
-			a = (uint8_t)nz;
-			goto loop;
-		}
-
-
+	case 0xE5 + 0x04: /* imm */    
 	case 0xEB: // unofficial equivalent
-		pc++;
-		data = page [pc] ^ 0xFF; 
+		data = page [pc+1] ^ 0xFF;
+		// SBC
 		{
-			int carry = (c >> 8) & 1;
-			int ov = (a ^ 0x80) + carry + (BOOST::int8_t) data; // sign-extend
-			status &= ~st_v;
-			status |= (ov >> 2) & 0x40;
-			c = nz = a + data + carry;
-			pc++;
+			int carry = (c_flag >> 8) & 1;
+			int ov = (a ^ st_n) + carry + (BOOST::int8_t) data; // sign-extend
+			status_v = ov;
+			c_flag = nz = a + data + carry;
+			pc+=2;
 			a = (uint8_t)nz;
-			goto loop;
 		}
+		goto loop;
 
 // ARITH_ADDR_MODES( 0x65 )          
-case 0x65 - 0x04: /* (ind,x) */         
-		pc++;             
-	data = page [pc];                   
+case 0x65 - 0x04: /* (ind,x) */
+	data = page [pc+1];                   
 	IND_X                               
-		data = READ(data);
+	data = READ(data);
 	// ADC
 	{
-		int carry = (c >> 8) & 1;
-		int ov = (a ^ 0x80) + carry + (BOOST::int8_t) data; // sign-extend
-		status &= ~st_v;
-		status |= (ov >> 2) & 0x40;
-		c = nz = a + data + carry;
-		pc++;
+		int carry = (c_flag >> 8) & 1;
+		int ov = (a ^ st_n) + carry + (BOOST::int8_t) data; // sign-extend
+		status_v = ov;
+		c_flag = nz = a + data + carry;
+		pc+=2;
 		a = (uint8_t)nz;
-		goto loop;
 	}
+	goto loop;
 
-case 0x65 + 0x0C: /* (ind),y */           
-		pc++;           
-	data = page [pc];                   
+case 0x65 + 0x0C: /* (ind),y */
+	data = page [pc+1];                   
 	IND_Y(true,true)                    
 		data = READ(data);
 	// ADC
 	{
-		int carry = (c >> 8) & 1;
-		int ov = (a ^ 0x80) + carry + (BOOST::int8_t) data; // sign-extend
-		status &= ~st_v;
-		status |= (ov >> 2) & 0x40;
-		c = nz = a + data + carry;
-		pc++;
+		int carry = (c_flag >> 8) & 1;
+		int ov = (a ^ st_n) + carry + (BOOST::int8_t) data; // sign-extend
+		status_v = ov;
+		c_flag = nz = a + data + carry;
+		pc+=2;
 		a = (uint8_t)nz;
 		goto loop;
 	}
 
-case 0x65 + 0x10: /* zp,X */              
-		pc++;           
-	data = uint8_t (page [pc] + x);     
+case 0x65 + 0x10: /* zp,X */
+	data = uint8_t (page [pc+1] + x);     
 	data = READ_LOW( data );            
 	// ADC
 	{
-		int carry = (c >> 8) & 1;
-		int ov = (a ^ 0x80) + carry + (BOOST::int8_t) data; // sign-extend
-		status &= ~st_v;
-		status |= (ov >> 2) & 0x40;
-		c = nz = a + data + carry;
-		pc++;
+		int carry = (c_flag >> 8) & 1;
+		int ov = (a ^ st_n) + carry + (BOOST::int8_t) data; // sign-extend
+		status_v = ov;
+		c_flag = nz = a + data + carry;
+		pc+=2;
 		a = (uint8_t)nz;
 		goto loop;
 	}
 
-case 0x65 + 0x00: /* zp */                
-		pc++;           
-	data = READ_LOW( page [pc] );       
+case 0x65 + 0x00: /* zp */
+	data = READ_LOW( page [pc+1] );       
 	// ADC
 	{
-		int carry = (c >> 8) & 1;
-		int ov = (a ^ 0x80) + carry + (BOOST::int8_t) data; // sign-extend
-		status &= ~st_v;
-		status |= (ov >> 2) & 0x40;
-		c = nz = a + data + carry;
-		pc++;
+		int carry = (c_flag >> 8) & 1;
+		int ov = (a ^ st_n) + carry + (BOOST::int8_t) data; // sign-extend
+		status_v = ov;
+		c_flag = nz = a + data + carry;
+		pc+=2;
 		a = (uint8_t)nz;
 		goto loop;
 	}
 
-case 0x65 + 0x14: /* abs,Y */             
-		pc++;           
-	data = page [pc] + y;               
-	{
-		HANDLE_PAGE_CROSSING(data);
-		int temp = data;
-		ADD_PAGE
+	case 0x65 + 0x14: /* abs,Y */
+		data = page [pc+1] + y;               
+		{
+			HANDLE_PAGE_CROSSING(data);
+			int temp = data;
+			data += GET_OPERAND(pc+2) << 8;
 			if (temp & 0x100)
 				READ_NO_RETURN(data - 0x100);
+			data = READ(data);
+			// ADC
+			{
+				int carry = (c_flag >> 8) & 1;
+				status_v = (a ^ st_n) + carry + (BOOST::int8_t) data; // sign-extend
+				c_flag = nz = a + data + carry;
+				pc+=3;
+				a = (uint8_t)nz;
+			}
+		}
+		goto loop;
+
+	case 0x65 + 0x18: /* abs,X */
+		data = page [pc+1] + x;               
+	 {                              
+		HANDLE_PAGE_CROSSING( data );       
+		int temp = data;
+		data += GET_OPERAND(pc+2) << 8;
+		if ( temp & 0x100 )                 
+			 READ_NO_RETURN( data - 0x100 );      
 		data = READ(data);
 		// ADC
 		{
-			int carry = (c >> 8) & 1;
-			int ov = (a ^ 0x80) + carry + (BOOST::int8_t) data; // sign-extend
-			status &= ~st_v;
-			status |= (ov >> 2) & 0x40;
-			c = nz = a + data + carry;
-			pc++;
+			int carry = (c_flag >> 8) & 1;
+			status_v = (a ^ st_n) + carry + (BOOST::int8_t) data; // sign-extend
+			c_flag = nz = a + data + carry;
+			pc+=3;
 			a = (uint8_t)nz;
-			goto loop;
 		}
-	}
-
-case 0x65 + 0x18: /* abs,X */      
-		pc++;                  
-	data = page [pc] + x;               
- {                              
-	HANDLE_PAGE_CROSSING( data );       
-	int temp = data;                    
-	ADD_PAGE                            
-	if ( temp & 0x100 )                 
-		 READ_NO_RETURN( data - 0x100 );      
-	data = READ(data);
-	// ADC
-	{
-		int carry = (c >> 8) & 1;
-		int ov = (a ^ 0x80) + carry + (BOOST::int8_t) data; // sign-extend
-		status &= ~st_v;
-		status |= (ov >> 2) & 0x40;
-		c = nz = a + data + carry;
-		pc++;
-		a = (uint8_t)nz;
+	}        
 		goto loop;
-	}
-}        
 
-case 0x65 + 0x08: /* abs */           
-		pc++;               
-	data = page [pc];                   
-	ADD_PAGE                          
+case 0x65 + 0x08: /* abs */ 
+	data = page [pc+1] + (page[pc+2] << 8);
 	data = READ( data );                
 	// ADC
 	{
-		int carry = (c >> 8) & 1;
-		int ov = (a ^ 0x80) + carry + (BOOST::int8_t) data; // sign-extend
-		status &= ~st_v;
-		status |= (ov >> 2) & 0x40;
-		c = nz = a + data + carry;
-		pc++;
+		int carry = (c_flag >> 8) & 1;
+		status_v = (a ^ st_n) + carry + (BOOST::int8_t) data; // sign-extend
+		c_flag = nz = a + data + carry;
+		pc+=3;
 		a = (uint8_t)nz;
-		goto loop;
 	}
+	goto loop;
 
-case 0x65 + 0x04: /* imm */           
-		pc++;               
-	data = page [pc];                   
+case 0x65 + 0x04: /* imm */
+	data = page [pc+1];                   
 // ADC
 	{
-		int carry = (c >> 8) & 1;
-		int ov = (a ^ 0x80) + carry + (BOOST::int8_t) data; // sign-extend
-		status &= ~st_v;
-		status |= (ov >> 2) & 0x40;
-		c = nz = a + data + carry;
-		pc++;
+		int carry = (c_flag >> 8) & 1;
+		status_v = (a ^ st_n) + carry + (BOOST::int8_t) data; // sign-extend
+		c_flag = nz = a + data + carry;
+		pc+=2;
 		a = (uint8_t) nz;
-		goto loop;
-	}                             
+	}         
+	goto loop;                    
 	
 // Shift/rotate
 
 	case 0x4A: // LSR A
 		pc++;
-		c = a << 8;
-		a = nz = a >> 1;
+		c_flag = a << 8;
+		nz = a >>= 1;
 		goto loop;
 
 	case 0x6A: // ROR A
 		pc++;
-		nz = (c >> 1) & 0x80; // could use bit insert macro here
-		c = a << 8;
+		nz = (c_flag >> 1) & 0x80; // could use bit insert macro here
+		c_flag = a << 8;
 		nz |= a >> 1;
 		a = nz;
 		goto loop;
 
 	case 0x0A: // ASL A
 		pc++;
-		c = nz = a << 1;
+		c_flag = nz = a << 1;
 		a = (uint8_t) nz;
 		goto loop;
 
 	case 0x2A: { // ROL A
 		pc++;           
 		nz = a << 1;
-		int temp = (c >> 8) & 1;
-		c = nz;
+		int temp = (c_flag >> 8) & 1;
+		c_flag = nz;
 		nz |= temp;
 		a = (uint8_t) nz;
 		goto loop;
 	}
 	
 	case 0x3E: // ROL abs,X
-		pc++;
-		data = page [pc]+ x;
+		data = page [pc+1] + x;
 		{
 			int temp = data;
-			ADD_PAGE
+			data += GET_OPERAND(pc+2) << 8;
 			READ_NO_RETURN(data - (temp & 0x100));
 			WRITE(data, temp = READ(data));
-			nz = (c >> 8) & 1;
-			nz |= (c = temp << 1);
+			nz = (c_flag >> 8) & 1;
+			nz |= (c_flag = temp << 1);
 		}
 		WRITE(data, (uint8_t)nz);
-		pc++;
+		pc+=3;
 		goto loop;
 	
 	case 0x1E: // ASL abs,X
-		pc++;
-		data = page [pc] + x;
+		data = page [pc+1] + x;
 		{
 			int temp = data;
-			ADD_PAGE
+			data += GET_OPERAND(pc+2) << 8;
 			READ_NO_RETURN(data - (temp & 0x100));
 			WRITE(data, temp = READ(data));
-			nz = c = temp << 1;
+			nz = c_flag = temp << 1;
 		}
-		pc++;
+		pc+=3;
 		WRITE(data, (uint8_t)nz);
 		goto loop;
 
 	case 0x0E: // ASL abs
-		pc++;
-		data = page [pc];
+		data = page [pc+1];
 		{
 			int temp = data;
-			ADD_PAGE
+			data += GET_OPERAND(pc+2) << 8;
 			WRITE(data, temp = READ(data));
-			nz = c = temp << 1;
+			nz = c_flag = temp << 1;
 		}
 		WRITE(data, (uint8_t)nz);
-		pc++;
+		pc+=3;
 		goto loop;
 
 	case 0x2E: // ROL abs
-		pc++;
-		data = page [pc];
+		data = page [pc+1];
 	{
 		int temp = data;
-		ADD_PAGE
+		data += GET_OPERAND(pc+2) << 8;
 		WRITE( data, temp = READ( data ) );
-		nz = (c >> 8) & 1;
-		nz |= (c = temp << 1);
+		nz = (c_flag >> 8) & 1;
+		nz |= (c_flag = temp << 1);
     }
-		pc++;
+		pc+=3;
 		WRITE( data, (uint8_t) nz );
 		goto loop;
 
 	case 0x7E: // ROR abs,X
-		pc++;
-		data = page [pc] + x; 
+		data = page [pc+1] + x; 
 		{
 			int temp = data;
-			ADD_PAGE
+			data += GET_OPERAND(pc+2) << 8;
 			READ_NO_RETURN(data - (temp & 0x100));
 			WRITE(data, temp = READ(data));
-			nz = ((c >> 1) & 0x80) | (temp >> 1);
-			c = temp << 8;
+			nz = ((c_flag >> 1) & 0x80) | (temp >> 1);
+			c_flag = temp << 8;
 			WRITE(data, (uint8_t)nz);
-			pc++;
+			pc+=3;
 			goto loop;
 		}
 	
 	case 0x5E: // LSR abs,X
-		pc++;
-		data = page [pc] + x;
+		data = page [pc+1] + x;
 		{
 			int temp = data;
-			ADD_PAGE
+			data += GET_OPERAND(pc+2) << 8;
 			READ_NO_RETURN(data - (temp & 0x100));
 			WRITE(data, temp = READ(data));
 			nz = (temp >> 1);
-			c = temp << 8;
-			pc++;
+			c_flag = temp << 8;
+			pc+=3;
 			WRITE(data, (uint8_t)nz);
 			goto loop;
 		}
 
 	case 0x4E: // LSR abs
-		pc++;
-		data = page [pc];
+		data = page [pc+1];
 		{
 			int temp = data;
-			ADD_PAGE
+			data += GET_OPERAND(pc+2) << 8;
 			WRITE(data, temp = READ(data));
 			nz = (temp >> 1);
-			c = temp << 8;
-			pc++;
+			c_flag = temp << 8;
+			pc+=3;
 			WRITE(data, (uint8_t)nz);
 			goto loop;
 		}
 
 	case 0x6E: // ROR abs
-		pc++;
-		data = page [pc];
+		data = page [pc+1];
 	{
 		int temp = data;
-		ADD_PAGE
+		data += GET_OPERAND(pc+2) << 8;
 		WRITE( data, temp = READ( data ) );
-		nz = ((c >> 1) & 0x80) | (temp >> 1);
-		c = temp << 8;
-		pc++;
+		nz = ((c_flag >> 1) & 0x80) | (temp >> 1);
+		c_flag = temp << 8;
+		pc+=3;
 		WRITE(data, (uint8_t)nz);
 		goto loop;
 	}
 	
 	case 0x76: // ROR zp,x
-		pc++;
-		data = uint8_t (page [pc] + x);
+		data = uint8_t (page [pc+1] + x);
 		{
 			int temp = READ_LOW(data);
-			nz = ((c >> 1) & 0x80) | (temp >> 1);
-			c = temp << 8;
-			pc++;
+			nz = ((c_flag >> 1) & 0x80) | (temp >> 1);
+			c_flag = temp << 8;
+			pc+=2;
 			WRITE_LOW(data, nz);
 			goto loop;
 		}
 	
 	case 0x56: // LSR zp,x
-		pc++;
-		data = uint8_t (page [pc] + x);
+		data = uint8_t (page [pc+1] + x);
 		{
 			int temp = READ_LOW(data);
 			nz = (temp >> 1);
-			c = temp << 8;
-			pc++;
+			c_flag = temp << 8;
+			pc+=2;
 			WRITE_LOW(data, nz);
 			goto loop;
 		}
 
 	case 0x46: // LSR zp
-		pc++;
-		data = page [pc];
+		data = page [pc+1];
 		{
 			int temp = READ_LOW(data);
 			nz = (temp >> 1);
-			c = temp << 8;
-			pc++;
+			c_flag = temp << 8;
+			pc+=2;
 			WRITE_LOW(data, nz);
 			goto loop;
 		}
 
 	case 0x66: // ROR zp
-		pc++;
-		data = page [pc];
+		data = page [pc+1];
 	{
 		int temp = READ_LOW( data );
-		nz = ((c >> 1) & 0x80) | (temp >> 1);
-		c = temp << 8;
-		pc++;
+		nz = ((c_flag >> 1) & 0x80) | (temp >> 1);
+		c_flag = temp << 8;
+		pc+=2;
 		WRITE_LOW(data, nz);
 		goto loop;
 	}
 	
 	case 0x36: // ROL zp,x
-		pc++;
-		data = page [pc];
-		data = uint8_t (data + x);
-		nz = (c >> 8) & 1;
-		nz |= (c = READ_LOW(data) << 1);
+		data = uint8_t (page [pc+1] + x);
+		nz = (c_flag >> 8) & 1;
+		nz |= (c_flag = READ_LOW(data) << 1);
 		WRITE_LOW(data, nz);
-		pc++;
+		pc+=2;
 		goto loop;
 	
 	case 0x16: // ASL zp,x
-		pc++;
-		data = uint8_t (page [pc] + x);
-		nz = (c = READ_LOW(data) << 1);
-		pc++;
+		data = uint8_t (page [pc+1] + x);
+		nz = (c_flag = READ_LOW(data) << 1);
+		pc+=2;
 		WRITE_LOW(data, nz);
 		goto loop;
 
 	case 0x06: // ASL zp
-		pc++;
-		data = page [pc];
-		nz = (c = READ_LOW(data) << 1);
+		data = page [pc+1];
+		nz = (c_flag = READ_LOW(data) << 1);
 		WRITE_LOW(data, nz);
-		pc++;
+		pc+=2;
 		goto loop;
 
 	case 0x26: // ROL zp
-		pc++;
-		data = page [pc];
-		nz = (c >> 8) & 1;
-		nz |= (c = READ_LOW( data ) << 1);
+		data = page [pc+1];
+		nz = (c_flag >> 8) & 1;
+		nz |= (c_flag = READ_LOW( data ) << 1);
 		WRITE_LOW(data, nz);
-		pc++;
+		pc+=2;
 		goto loop;
 	
 // Increment/decrement
@@ -1802,92 +1635,81 @@ case 0x65 + 0x04: /* imm */
 		INC_DEC_XY( y, -1 ) // DEY
 	
 	case 0xF6: // INC zp,x
-		pc++;
-		data = uint8_t (page[pc] + x);
+		data = uint8_t (page[pc+1] + x);
 		nz = READ_LOW(data) + 1;
 		WRITE_LOW(data, nz);
-		pc++;
+		pc+=2;
 		goto loop;
 
 	case 0xE6: // INC zp
-		pc++;
-		data = page [pc];
+		data = page [pc+1];
 		nz = READ_LOW(data) + 1;
 		WRITE_LOW(data, nz);
-		pc++;
+		pc+=2;
 		goto loop;
 	
 	case 0xD6: // DEC zp,x
-		pc++;
-		data = page [pc];
-		data = uint8_t (data + x);
+		data = uint8_t (page [pc+1] + x);
 		nz =  READ_LOW(data) - 1;
 		WRITE_LOW(data, nz);
-		pc++;
+		pc+=2;
 		goto loop;
 
 	case 0xC6: // DEC zp
-		pc++;
-		data = page [pc];
+		data = page [pc+1];
 		nz = READ_LOW( data ) - 1;
-		pc++;
+		pc+=2;
 		WRITE_LOW( data, nz );
 		goto loop;
 	
 	case 0xFE: { // INC abs,x
-		pc++;           
-		data = page [pc];
-		int temp = data + x;
-		data = x + GET_ADDR();
+		pc++;
+		int temp = page [pc] + x;
+		data = GET_OPERAND16(pc) + x;
 		READ_NO_RETURN( data - ( temp & 0x100 ) );
-		{
-			int temp;
-			WRITE(data, temp = READ(data));
-			nz = temp + 1;
-			WRITE(data, (uint8_t)nz);
-		}
+		
+		WRITE(data, temp = READ(data));
+		nz = temp + 1;
+		WRITE(data, (uint8_t)nz);
+
 		pc += 2;
-		goto loop;
 	}
+		goto loop;
 	
 	case 0xEE: // INC abs
-		pc++;
-		data = GET_ADDR();
+		data = GET_OPERAND16(pc+1);
 		{
 			int temp;
 			WRITE(data, temp = READ(data));
 			nz = temp + 1;
 			WRITE(data, (uint8_t)nz);
 		}
-		pc += 2;
+		pc += 3;
 		goto loop;
 	
 	case 0xDE: { // DEC abs,x
-		pc++;           
-		data = page [pc];
-		int temp = data + x;
-		data = x + GET_ADDR();
+		pc++;      
+		int temp = page [pc] + x;
+		data = x + GET_OPERAND16(pc);
 		READ_NO_RETURN( data - ( temp & 0x100 ) );
-		{
-			int temp;
-			WRITE(data, temp = READ(data));
-			nz = temp - 1;
-			WRITE(data, (uint8_t)nz);
-		}
+		
+		WRITE(data, temp = READ(data));
+		nz = temp - 1;
+		WRITE(data, (uint8_t)nz);
+
 		pc += 2;
-		goto loop;
 	}
+		goto loop;
 	
 	case 0xCE: // DEC abs
-		pc++;
-		data = GET_ADDR();
+		data = GET_OPERAND16(pc+1);
 	{
 		int temp;
 		WRITE( data, temp = READ( data ) );
 		nz = temp -1;
 		WRITE( data, (uint8_t) nz );
 	}
-		pc += 2;
+		pc += 3;
 		goto loop;
 		
 // Transfer
@@ -1931,17 +1753,23 @@ case 0x65 + 0x04: /* imm */
 			pc   = READ_LOW( 0x100 | (sp - 0xFF) );
 			pc  |= READ_LOW( 0x100 | (sp - 0xFE) ) * 0x100;
 			sp = (sp - 0xFD) | 0x100;
-			data = status;
-			SET_STATUS( temp );
+			data = status_i;
+			// Set Status
+			status_i = temp & st_i;
+			status_v = temp << 2;
+			status_d = temp;
+
+			c_flag = temp << 8;
+			nz = (temp << 4) & 0x800;
+			nz |= ~temp & st_z;
 		}
-		if ( !((data ^ status) & st_i) )
+		if ( !((data ^ status_i)))
 			goto loop; // I flag didn't change
-	i_flag_changed:
 		//dprintf( "%6d %s\n", time(), (status & st_i ? "SEI" : "CLI") );
-		this->r.status = status; // update externally-visible I flag
+		this->registers.status = status_i | (status_d & st_d) | ((status_v >> 2) & st_v); // update externally-visible I flag
 		// update clock_limit based on modified I flag
 		clock_limit = end_time_;
-		if ( end_time_ <= irq_time_ || status & st_i)
+		if ( end_time_ <= irq_time_ || status_i)
 			goto loop;
 		clock_limit = irq_time_;
 		goto loop;
@@ -1950,11 +1778,19 @@ case 0x65 + 0x04: /* imm */
 		pc++;           
 		int temp = READ_LOW( sp );
 		sp = (sp - 0xFF) | 0x100;
-		data = status;
-		SET_STATUS( temp );
-		if ( !((data ^ status) & st_i) )
+		data = status_i;
+		// Set Status
+		status_i = temp & st_i;
+		status_v = temp << 2;
+		status_d = temp;
+
+		c_flag = temp << 8;
+		nz = (temp << 4) & 0x800;
+		nz |= ~temp & st_z;
+
+		if ( !((data ^ status_i)) )
 			goto loop; // I flag didn't change
-		if ( !(status & st_i) )
+		if ( !(status_i) )
 			goto handle_cli;
 		goto handle_sei;
 	}
@@ -1962,14 +1798,21 @@ case 0x65 + 0x04: /* imm */
 	case 0x08: { // PHP
 		pc++;           
 		int temp;
-		CALC_STATUS( temp );
+		// CALC STATUS( temp );
+		temp = status_i | (status_d & st_d) | ((status_v >> 2) & st_v);
+		temp |= (c_flag >> 8) & st_c;
+		if (IS_NEG) 
+			temp |= st_n;
+		if (!(nz & 0xFF)) 
+			temp |= st_z;
+
 		PUSH( temp | st_b | st_r );
 		goto loop;
 	}
 	
 	case 0x6C: // JMP (ind)
 		pc++;
-		data = GET_ADDR();
+		data = GET_OPERAND16(pc);
 		pc = READ( data );
 		pc |= READ( (data & 0xFF00) | ((data + 1) & 0xFF) ) << 8;
 		goto loop;
@@ -1979,49 +1822,64 @@ case 0x65 + 0x04: /* imm */
 		WRITE_LOW( 0x100 | (sp - 1), pc >> 8 );
 		WRITE_LOW( 0x100 | (sp - 2), pc );
 		int temp;
-		CALC_STATUS( temp );
+
+		// CALC STATUS( temp );
+		temp = status_i | (status_d & st_d) | ((status_v >> 2) & st_v);
+		temp |= (c_flag >> 8) & st_c;
+		if (IS_NEG)
+			temp |= st_n;
+		if (!(nz & 0xFF))
+			temp |= st_z;
+
 		sp = (sp - 3) | 0x100;
 		WRITE_LOW( sp, temp | st_b | st_r );
 		pc = GET_LE16( &code_map [0xFFFE >> page_bits] [0xFFFE] );
-		status |= st_i;
-		goto i_flag_changed;
+		status_i = st_i;
+		//dprintf( "%6d %s\n", time(), (status & st_i ? "SEI" : "CLI") );
+		this->registers.status = status_i | (status_d & st_d) | ((status_v >> 2) & st_v); // update externally-visible I flag
+																						  // update clock_limit based on modified I flag
+		clock_limit = end_time_;
+		if (end_time_ <= irq_time_ || status_i)
+			goto loop;
+		clock_limit = irq_time_;
+		goto loop;
 	}
 	
 // Flags
 
 	case 0x38: // SEC
 		pc++;
-		c = ~0;
+		c_flag = ~0;
 		goto loop;
 	
 	case 0x18: // CLC
 		pc++;
-		c = 0;
+		c_flag = 0;
 		goto loop;
 		
 	case 0xB8: // CLV
 		pc++;
-		status &= ~st_v;
+		status_v = 0;
 		goto loop;
 	
 	case 0xD8: // CLD
 		pc++;
-		status &= ~st_d;
+		status_d = 0;
 		goto loop;
 	
 	case 0xF8: // SED
 		pc++;
-		status |= st_d;
+		status_d = st_d;
 		goto loop;
 	
 	case 0x58: // CLI
 		pc++;
-		if ( !(status & st_i) )
+		if ( !(status_i) )
 			goto loop;
-		status &= ~st_i;
+		status_i = 0;
 	handle_cli:
 		//dprintf( "%6d CLI\n", time() );
-		this->r.status = status; // update externally-visible I flag
+		this->registers.status = (status_d & st_d) | status_i | ((status_v >> 2) & st_v); // update externally-visible I flag
 		if ( clock_count < end_time_ )
 		{
 			assert( clock_limit == end_time_ );
@@ -2038,12 +1896,12 @@ case 0x65 + 0x04: /* imm */
 		
 	case 0x78: // SEI
 		pc++;
-		if ( status & st_i )
+		if (status_i)
 			goto loop;
-		status |= st_i;
+		status_i = st_i;
 	handle_sei:
 		//dprintf( "%6d SEI\n", time() );
-		this->r.status = status; // update externally-visible I flag
+		this->registers.status = status_i | (status_d & st_d) | ((status_v >> 2) & st_v); // update externally-visible I flag
 		clock_limit = end_time_;
 		if ( clock_count < irq_time_ )
 			goto loop;
@@ -2052,14 +1910,16 @@ case 0x65 + 0x04: /* imm */
 
 // Unofficial
 	case 0x1C: case 0x3C: case 0x5C: case 0x7C: case 0xDC: case 0xFC: { // SKW
-		pc++;
-		data = page [pc] + x;
+		data = page [pc+1] + x;
 		HANDLE_PAGE_CROSSING( data );
-		int addr = GET_ADDR() + x;
+		int addr = GET_OPERAND16(pc+1) + x;
 		if ( data & 0x100 )
 			READ_NO_RETURN( addr - 0x100 );
 		READ_NO_RETURN( addr );
+		pc += 3;
+		goto loop;
 	}
+
 	case 0x0C: // SKW
 		pc+=3;
 		goto loop;
@@ -2075,40 +1935,37 @@ case 0x65 + 0x04: /* imm */
 
 	// ARITH_ADDR_MODES_PTR
 	case 0xC7 - 0x04: /* (ind,x) */
-		pc++;
-		data = page [pc];
+		data = page [pc+1];
 		IND_X
 		WRITE(data, nz = READ(data));
 		nz = uint8_t(nz - 1);
 		WRITE(data, nz);
-		pc++;
+		pc+=2;
 		nz = a - nz;
-		c = ~nz;
+		c_flag = ~nz;
 		nz &= 0xFF;
 		goto loop;
 
 	case 0xC7 + 0x0C:
-		pc++;
-		data = page [pc];
+		data = page [pc+1];
 		IND_Y(false,false)
 		WRITE(data, nz = READ(data));
 		nz = uint8_t(nz - 1);
 		WRITE(data, nz);
-		pc++;
+		pc+=2;
 		nz = a - nz;
-		c = ~nz;
+		c_flag = ~nz;
 		nz &= 0xFF;
 		goto loop;
 
 	case 0xC7 + 0x10: /* zp,X */
-		pc++;
-		data = uint8_t (page [pc] + x);
+		data = uint8_t (page [pc+1] + x);
 		WRITE(data, nz = READ(data));
 		nz = uint8_t(nz - 1);
 		WRITE(data, nz);
-		pc++;
+		pc+=2;
 		nz = a - nz;
-		c = ~nz;
+		c_flag = ~nz;
 		nz &= 0xFF;
 		goto loop;
 
@@ -2124,7 +1981,7 @@ case 0x65 + 0x04: /* imm */
 		WRITE(data, nz);
 		pc++;
 		nz = a - nz;
-		c = ~nz;
+		c_flag = ~nz;
 		nz &= 0xFF;
 		goto loop;
 		}
@@ -2141,7 +1998,7 @@ case 0x65 + 0x04: /* imm */
 		WRITE(data, nz);
 		pc++;
 		nz = a - nz;
-		c = ~nz;
+		c_flag = ~nz;
 		nz &= 0xFF;
 		goto loop;
 		}
@@ -2155,76 +2012,69 @@ case 0x65 + 0x04: /* imm */
 		WRITE(data, nz);
 		pc++;
 		nz = a - nz;
-		c = ~nz;
+		c_flag = ~nz;
 		nz &= 0xFF;
 		goto loop;
 
 	case 0xC7 + 0x00: /* zp */
-		pc++;
-		data = page [pc]; // DCP
+		data = page [pc+1]; // DCP
 		WRITE( data, nz = READ( data ) );
 		nz = uint8_t( nz - 1 );
 		WRITE( data, nz );
-		pc++;
+		pc+=2;
 		nz = a - nz;
-		c = ~nz;
+		c_flag = ~nz;
 		nz &= 0xFF;
 		goto loop;
 
 
 // ARITH_ADDR_MODES_PTR( 0xE7 )      
-	case 0xE7 - 0x04: /* (ind,x) */    
-		pc++;       
-		data = page [pc];                   
+	case 0xE7 - 0x04: /* (ind,x) */ 
+		data = page [pc+1];                   
 		IND_X 
 		WRITE(data, nz = READ(data));
 		nz = uint8_t(nz + 1);
 		WRITE(data, nz);
 		data = nz ^ 0xFF;
 		{
-			int carry = (c >> 8) & 1;
-			int ov = (a ^ 0x80) + carry + (BOOST::int8_t) data; // sign-extend
-			status &= ~st_v;
-			status |= (ov >> 2) & 0x40;
-			c = nz = a + data + carry;
-			pc++;
+			int carry = (c_flag >> 8) & 1;
+			int ov = (a ^ st_n) + carry + (BOOST::int8_t) data; // sign-extend
+			status_v = ov;
+			c_flag = nz = a + data + carry;
+			pc+=2;
 			a = (uint8_t)nz;
-			goto loop;
 		}
+		goto loop;
 
 	case 0xE7 + 0x0C:
-		pc++;
-		data = page [pc];                   
+		data = page [pc+1];                   
 		IND_Y(false,false)
 		WRITE(data, nz = READ(data));
 		nz = uint8_t(nz + 1);
 		WRITE(data, nz);
 		data = nz ^ 0xFF;
 		{
-			int carry = (c >> 8) & 1;
-			int ov = (a ^ 0x80) + carry + (BOOST::int8_t) data; // sign-extend
-			status &= ~st_v;
-			status |= (ov >> 2) & 0x40;
-			c = nz = a + data + carry;
-			pc++;
+			int carry = (c_flag >> 8) & 1;
+			int ov = (a ^ st_n) + carry + (BOOST::int8_t) data; // sign-extend
+			status_v = ov;
+			c_flag = nz = a + data + carry;
+			pc+=2;
 			a = (uint8_t)nz;
-			goto loop;
 		}
+		goto loop;
 
-	case 0xE7 + 0x10: /* zp,X */   
-		pc++;           
-		data = uint8_t (page [pc] + x);     
+	case 0xE7 + 0x10: /* zp,X */  
+		data = uint8_t (page [pc+1] + x);     
 		WRITE(data, nz = READ(data));
 		nz = uint8_t(nz + 1);
 		WRITE(data, nz);
 		data = nz ^ 0xFF;
 		{
-			int carry = (c >> 8) & 1;
-			int ov = (a ^ 0x80) + carry + (BOOST::int8_t) data; // sign-extend
-			status &= ~st_v;
-			status |= (ov >> 2) & 0x40;
-			c = nz = a + data + carry;
-			pc++;
+			int carry = (c_flag >> 8) & 1;
+			int ov = (a ^ st_n) + carry + (BOOST::int8_t) data; // sign-extend
+			status_v = ov;
+			c_flag = nz = a + data + carry;
+			pc+=2;
 			a = (uint8_t)nz;
 			goto loop;
 		}
@@ -2235,127 +2085,120 @@ case 0x65 + 0x04: /* imm */
 		{
 			int temp = data;
 			ADD_PAGE
-				READ_NO_RETURN(data - (temp & 0x100));
+			READ_NO_RETURN(data - (temp & 0x100));
 			WRITE(data, nz = READ(data));
 			nz = uint8_t(nz + 1);
 			WRITE(data, nz);
 			data = nz ^ 0xFF;
 			{
-				int carry = (c >> 8) & 1;
-				int ov = (a ^ 0x80) + carry + (BOOST::int8_t) data; // sign-extend
-				status &= ~st_v;
-				status |= (ov >> 2) & 0x40;
-				c = nz = a + data + carry;
+				int carry = (c_flag >> 8) & 1;
+				int ov = (a ^ st_n) + carry + (BOOST::int8_t) data; // sign-extend
+				status_v = ov;
+				c_flag = nz = a + data + carry;
 				pc++;
 				a = (uint8_t)nz;
-				goto loop;
 			}
 		}
+		goto loop;
 
 	case 0xE7 + 0x18: /* abs,X */      
 		pc++;       
 		data = page [pc] + x;               
-	{                              
-		int temp = data;                    
+		{                              
+			int temp = data;                    
+			ADD_PAGE                            
+			READ_NO_RETURN( data - ( temp & 0x100 ) );    
+			WRITE(data, nz = READ(data));
+			nz = uint8_t(nz + 1);
+			WRITE(data, nz);
+			data = nz ^ 0xFF;
+			{
+				int carry = (c_flag >> 8) & 1;
+				int ov = (a ^ st_n) + carry + (BOOST::int8_t) data; // sign-extend
+				status_v = ov;
+				c_flag = nz = a + data + carry;
+				pc++;
+				a = (uint8_t)nz;
+			}
+		}             
+		goto loop;    
+
+	case 0xE7 + 0x08: /* abs */         
+		pc++;      
+		data = page [pc];                   
 		ADD_PAGE                            
-		READ_NO_RETURN( data - ( temp & 0x100 ) );    
 		WRITE(data, nz = READ(data));
 		nz = uint8_t(nz + 1);
 		WRITE(data, nz);
 		data = nz ^ 0xFF;
 		{
-			int carry = (c >> 8) & 1;
-			int ov = (a ^ 0x80) + carry + (BOOST::int8_t) data; // sign-extend
-			status &= ~st_v;
-			status |= (ov >> 2) & 0x40;
-			c = nz = a + data + carry;
+			int carry = (c_flag >> 8) & 1;
+			int ov = (a ^ st_n) + carry + (BOOST::int8_t) data; // sign-extend
+			status_v = ov;
+			c_flag = nz = a + data + carry;
 			pc++;
 			a = (uint8_t)nz;
-			goto loop;
 		}
-	}                                       
-	case 0xE7 + 0x08: /* abs */         
-		pc++;      
-		data = page [pc];                   
-		ADD_PAGE                            
-			WRITE(data, nz = READ(data));
-		nz = uint8_t(nz + 1);
-		WRITE(data, nz);
-		data = nz ^ 0xFF;
-		{
-			int carry = (c >> 8) & 1;
-			int ov = (a ^ 0x80) + carry + (BOOST::int8_t) data; // sign-extend
-			status &= ~st_v;
-			status |= (ov >> 2) & 0x40;
-			c = nz = a + data + carry;
-			pc++;
-			a = (uint8_t)nz;
-			goto loop;
-		}
+		goto loop;
 
-	case 0xE7 + 0x00: /* zp */              
-		pc++;  
-		data = page [pc]; // ISC
+	case 0xE7 + 0x00: /* zp */  
+		data = page [pc+1]; // ISC
 		WRITE(data, nz = READ(data));
 		nz = uint8_t(nz + 1);
 		WRITE(data, nz);
 		data = nz ^ 0xFF; 
 		{
-			int carry = (c >> 8) & 1;
-			int ov = (a ^ 0x80) + carry + (BOOST::int8_t) data; // sign-extend
-			status &= ~st_v;
-			status |= (ov >> 2) & 0x40;
-			c = nz = a + data + carry;
-			pc++;
+			int carry = (c_flag >> 8) & 1;
+			int ov = (a ^ st_n) + carry + (BOOST::int8_t) data; // sign-extend
+			status_v = ov;
+			c_flag = nz = a + data + carry;
+			pc+=2;
 			a = (uint8_t)nz;
-			goto loop;
 		}
+		goto loop;
 
 
 	// ARITH_ADDR_MODES_PTR( 0x27 )      
-	case 0x27 - 0x04: /* (ind,x) */         
-		pc++;  
-		data = page [pc];                   
+	case 0x27 - 0x04: /* (ind,x) */   
+		data = page [pc+1];                   
 		IND_X
 		{ // RLA
 			WRITE(data, nz = READ(data));
-		int temp = c;
-		c = nz << 1;
-		nz = uint8_t(c) | ((temp >> 8) & 0x01);
+		int temp = c_flag;
+		c_flag = nz << 1;
+		nz = uint8_t(c_flag) | ((temp >> 8) & 0x01);
 		WRITE(data, nz);
-		pc++;
+		pc+=2;
 		nz = a &= nz;
-		goto loop;
 		}
+		goto loop;
 
 	case 0x27 + 0x0C:
-		pc++;
-		data = page [pc];                   
+		data = page [pc+1];                   
 		IND_Y(false,false) 
 		{ // RLA
 			WRITE(data, nz = READ(data));
-			int temp = c;
-			c = nz << 1;
-			nz = uint8_t(c) | ((temp >> 8) & 0x01);
+			int temp = c_flag;
+			c_flag = nz << 1;
+			nz = uint8_t(c_flag) | ((temp >> 8) & 0x01);
 			WRITE(data, nz);
-			pc++;
+			pc+=2;
 			nz = a &= nz;
-			goto loop;
 		}
+		goto loop;
 
-	case 0x27 + 0x10: /* zp,X */              
-		pc++;
-		data = uint8_t (page [pc] + x);     
+	case 0x27 + 0x10: /* zp,X */ 
+		data = uint8_t (page [pc+1] + x);     
 		{ // RLA
 			WRITE(data, nz = READ(data));
-			int temp = c;
-			c = nz << 1;
-			nz = uint8_t(c) | ((temp >> 8) & 0x01);
+			int temp = c_flag;
+			c_flag = nz << 1;
+			nz = uint8_t(c_flag) | ((temp >> 8) & 0x01);
 			WRITE(data, nz);
-			pc++;
+			pc+=2;
 			nz = a &= nz;
-			goto loop;
 		}
+		goto loop;
 
 	case 0x27 + 0x14: /* abs,Y */             
 		pc++;
@@ -2363,18 +2206,18 @@ case 0x65 + 0x04: /* imm */
 		{
 			int temp = data;
 			ADD_PAGE
-				READ_NO_RETURN(data - (temp & 0x100));
+			READ_NO_RETURN(data - (temp & 0x100));
 			{ // RLA
 				WRITE(data, nz = READ(data));
-				int temp = c;
-				c = nz << 1;
-				nz = uint8_t(c) | ((temp >> 8) & 0x01);
+				int temp = c_flag;
+				c_flag = nz << 1;
+				nz = uint8_t(c_flag) | ((temp >> 8) & 0x01);
 				WRITE(data, nz);
 				pc++;
 				nz = a &= nz;
-				goto loop;
 			}
 		}
+		goto loop;
 
 	case 0x27 + 0x18: /* abs,X */             
 		pc++;
@@ -2385,15 +2228,15 @@ case 0x65 + 0x04: /* imm */
 		READ_NO_RETURN( data - ( temp & 0x100 ) );    
 		{ // RLA
 			WRITE(data, nz = READ(data));
-			int temp = c;
-			c = nz << 1;
-			nz = uint8_t(c) | ((temp >> 8) & 0x01);
+			int temp = c_flag;
+			c_flag = nz << 1;
+			nz = uint8_t(c_flag) | ((temp >> 8) & 0x01);
 			WRITE(data, nz);
 			pc++;
 			nz = a &= nz;
-			goto loop;
 		}
 	}      
+		goto loop;
 
 	case 0x27 + 0x08: /* abs */               
 		pc++;
@@ -2401,98 +2244,83 @@ case 0x65 + 0x04: /* imm */
 		ADD_PAGE                            
 		{ // RLA
 			WRITE(data, nz = READ(data));
-		int temp = c;
-		c = nz << 1;
-		nz = uint8_t(c) | ((temp >> 8) & 0x01);
+		int temp = c_flag;
+		c_flag = nz << 1;
+		nz = uint8_t(c_flag) | ((temp >> 8) & 0x01);
 		WRITE(data, nz);
 		pc++;
 		nz = a &= nz;
-		goto loop;
 		}
+		goto loop;
 
-	case 0x27 + 0x00: /* zp */                
-		pc++;
-		data = page [pc];                   
+	case 0x27 + 0x00: /* zp */
+		data = page [pc+1];                   
 	{ // RLA
 		WRITE(data, nz = READ(data));
-		int temp = c;
-		c = nz << 1;
-		nz = uint8_t(c) | ((temp >> 8) & 0x01);
+		int temp = c_flag;
+		c_flag = nz << 1;
+		nz = uint8_t(c_flag) | ((temp >> 8) & 0x01);
 		WRITE(data, nz);
-		pc++;
+		pc+=2;
 		nz = a &= nz;
-		goto loop;
 		}
+		goto loop;
 
 
 	// ARITH_ADDR_MODES_PTR( 0x67 )      
-	case 0x67 - 0x04: /* (ind,x) */          
-		pc++; 
-		data = page [pc];                   
+	case 0x67 - 0x04: /* (ind,x) */  
+		data = page [pc+1];                   
 		IND_X                               
 		{ // RRA
 			int temp;
 		WRITE(data, temp = READ(data));
-		nz = ((c >> 1) & 0x80) | (temp >> 1);
+		nz = ((c_flag >> 1) & 0x80) | (temp >> 1);
 		WRITE(data, nz);
-		data = nz;
-		c = temp << 8;
 		{
-			int carry = (c >> 8) & 1;
-			int ov = (a ^ 0x80) + carry + (BOOST::int8_t) data; // sign-extend
-			status &= ~st_v;
-			status |= (ov >> 2) & 0x40;
-			c = nz = a + data + carry;
-			pc++;
+			int carry = temp & 1;
+			status_v = (a ^ st_n) + carry + (BOOST::int8_t) nz; // sign-extend
+			c_flag = nz = a + nz + carry;
+			pc+=2;
 			a = (uint8_t)nz;
-			goto loop;
 		}
 		}
+		goto loop;
 
 	case 0x67 + 0x0C:
-		pc++;
-		data = page [pc];                   
+		data = page [pc+1];                   
 		IND_Y(false,false)                  
 		{ // RRA
 			int temp;
 			WRITE(data, temp = READ(data));
-			nz = ((c >> 1) & 0x80) | (temp >> 1);
+			nz = ((c_flag >> 1) & 0x80) | (temp >> 1);
 			WRITE(data, nz);
-			data = nz;
-			c = temp << 8;
 			{
-				int carry = (c >> 8) & 1;
-				int ov = (a ^ 0x80) + carry + (BOOST::int8_t) data; // sign-extend
-				status &= ~st_v;
-				status |= (ov >> 2) & 0x40;
-				c = nz = a + data + carry;
-				pc++;
+				int carry = temp & 1;
+				int ov = 
+				status_v = (a ^ st_n) + carry + (BOOST::int8_t) nz; // sign-extend
+				c_flag = nz = a + nz + carry;
+				pc+=2;
 				a = (uint8_t)nz;
-				goto loop;
 			}
 		}
+		goto loop;
 
-	case 0x67 + 0x10: /* zp,X */        
-		pc++;      
-		data = uint8_t (page [pc] + x);     
+	case 0x67 + 0x10: /* zp,X */
+		data = uint8_t (page [pc+1] + x);     
 		{ // RRA
 			int temp;
 			WRITE(data, temp = READ(data));
-			nz = ((c >> 1) & 0x80) | (temp >> 1);
+			nz = ((c_flag >> 1) & 0x80) | (temp >> 1);
 			WRITE(data, nz);
-			data = nz;
-			c = temp << 8;
 			{
-				int carry = (c >> 8) & 1;
-				int ov = (a ^ 0x80) + carry + (BOOST::int8_t) data; // sign-extend
-				status &= ~st_v;
-				status |= (ov >> 2) & 0x40;
-				c = nz = a + data + carry;
-				pc++;
+				int carry = temp & 1;
+				status_v = (a ^ st_n) + carry + (BOOST::int8_t) nz; // sign-extend
+				c_flag = nz = a + nz + carry;
+				pc+=2;
 				a = (uint8_t)nz;
-				goto loop;
 			}
 		}
+		goto loop;
 
 	case 0x67 + 0x14: /* abs,Y */        
 		pc++;     
@@ -2504,22 +2332,18 @@ case 0x65 + 0x04: /* imm */
 			{ // RRA
 				int temp;
 				WRITE(data, temp = READ(data));
-				nz = ((c >> 1) & 0x80) | (temp >> 1);
+				nz = ((c_flag >> 1) & 0x80) | (temp >> 1);
 				WRITE(data, nz);
-				data = nz;
-				c = temp << 8;
 				{
-					int carry = (c >> 8) & 1;
-					int ov = (a ^ 0x80) + carry + (BOOST::int8_t) data; // sign-extend
-					status &= ~st_v;
-					status |= (ov >> 2) & 0x40;
-					c = nz = a + data + carry;
+					int carry = temp & 1;
+					status_v = (a ^ st_n) + carry + (BOOST::int8_t) nz; // sign-extend
+					c_flag = nz = a + nz + carry;
 					pc++;
 					a = (uint8_t)nz;
-					goto loop;
 				}
 			}
 		}
+		goto loop;
 
 	case 0x67 + 0x18: /* abs,X */          
 		pc++;   
@@ -2531,22 +2355,18 @@ case 0x65 + 0x04: /* imm */
 		{ // RRA
 			int temp;
 			WRITE(data, temp = READ(data));
-			nz = ((c >> 1) & 0x80) | (temp >> 1);
+			nz = ((c_flag >> 1) & 0x80) | (temp >> 1);
 			WRITE(data, nz);
-			data = nz;
-			c = temp << 8;
 			{
-				int carry = (c >> 8) & 1;
-				int ov = (a ^ 0x80) + carry + (BOOST::int8_t) data; // sign-extend
-				status &= ~st_v;
-				status |= (ov >> 2) & 0x40;
-				c = nz = a + data + carry;
+				int carry = temp & 1;
+				status_v = (a ^ st_n) + carry + (BOOST::int8_t) nz; // sign-extend
+				c_flag = nz = a + nz + carry;
 				pc++;
 				a = (uint8_t)nz;
-				goto loop;
 			}
 		}
 	}     
+		goto loop;
 
 	case 0x67 + 0x08: /* abs */        
 		pc++;       
@@ -2555,81 +2375,69 @@ case 0x65 + 0x04: /* imm */
 		{ // RRA
 			int temp;
 		WRITE(data, temp = READ(data));
-		nz = ((c >> 1) & 0x80) | (temp >> 1);
+		nz = ((c_flag >> 1) & 0x80) | (temp >> 1);
 		WRITE(data, nz);
-		data = nz;
-		c = temp << 8;
 		{
-			int carry = (c >> 8) & 1;
-			int ov = (a ^ 0x80) + carry + (BOOST::int8_t) data; // sign-extend
-			status &= ~st_v;
-			status |= (ov >> 2) & 0x40;
-			c = nz = a + data + carry;
+			int carry = temp & 1;
+			status_v = (a ^ st_n) + carry + (BOOST::int8_t) nz; // sign-extend
+			c_flag = nz = a + nz + carry;
 			pc++;
 			a = (uint8_t)nz;
+		}
+		}
 			goto loop;
-		}
-		}
 
-	case 0x67 + 0x00: /* zp */         
-		pc++;       
-		data = page [pc];                   
+	case 0x67 + 0x00: /* zp */   
+		data = page [pc+1];                   
 		{ // RRA
 		int temp;
 		WRITE(data, temp = READ(data));
-		nz = ((c >> 1) & 0x80) | (temp >> 1);
+		nz = ((c_flag >> 1) & 0x80) | (temp >> 1);
 		WRITE(data, nz);
-		data = nz;
-		c = temp << 8; 
 		{
-			int carry = (c >> 8) & 1;
-			int ov = (a ^ 0x80) + carry + (BOOST::int8_t) data; // sign-extend
-			status &= ~st_v;
-			status |= (ov >> 2) & 0x40;
-			c = nz = a + data + carry;
-			pc++;
+			int carry = temp & 1;
+			status_v = (a ^ st_n) + carry + (BOOST::int8_t) nz; // sign-extend
+			c_flag = nz = a + nz + carry;
+			pc+=2;
 			a = (uint8_t)nz;
-			goto loop;
 		}
 		}
+		goto loop;
 
 	// ARITH_ADDR_MODES_PTR( 0x07 )      
-	case 0x07 - 0x04: /* (ind,x) */       
-		pc++;    
-		data = page [pc];                   
+	case 0x07 - 0x04: /* (ind,x) */  
+		data = page [pc+1];                   
 		IND_X                               
 			// SLO
 			WRITE(data, nz = READ(data));
-		c = nz << 1;
-		nz = uint8_t(c);
+		c_flag = nz << 1;
+		nz = uint8_t(c_flag);
 		WRITE(data, nz);
 		nz = (a |= nz);
-		pc++;
+		pc+=2;
 		goto loop;
 
 	case 0x07 + 0x0C:
-		pc++;
-		data = page [pc];                   
+		data = page [pc+1];                   
 		IND_Y(false,false)                  
 			// SLO
 			WRITE(data, nz = READ(data));
-		c = nz << 1;
-		nz = uint8_t(c);
+		c_flag = nz << 1;
+		nz = uint8_t(c_flag);
 		WRITE(data, nz);
 		nz = (a |= nz);
-		pc++;
+		pc+=2;
 		goto loop;
 
-	case 0x07 + 0x10: /* zp,X */           
-		pc++;   
-		data = uint8_t (page [pc] + x);     
+	case 0x07 + 0x10: /* zp,X */   
+		data = uint8_t (page [pc+1] + x);     
 		// SLO
 		WRITE(data, nz = READ(data));
-		c = nz << 1;
-		nz = uint8_t(c);
+		c_flag = nz << 1;
+		nz = uint8_t(c_flag);
 		WRITE(data, nz);
 		nz = (a |= nz);
-		pc++;
+		pc+=2;
 		goto loop;
 
 	case 0x07 + 0x14: /* abs,Y */     
@@ -2641,13 +2449,13 @@ case 0x65 + 0x04: /* imm */
 				READ_NO_RETURN(data - (temp & 0x100));
 			// SLO
 			WRITE(data, nz = READ(data));
-			c = nz << 1;
-			nz = uint8_t(c);
+			c_flag = nz << 1;
+			nz = uint8_t(c_flag);
 			WRITE(data, nz);
 			nz = (a |= nz);
 			pc++;
-			goto loop;
 		}
+		goto loop;
 
 	case 0x07 + 0x18: /* abs,X */       
 		pc++;      
@@ -2658,13 +2466,13 @@ case 0x65 + 0x04: /* imm */
 		READ_NO_RETURN( data - ( temp & 0x100 ) );    
 		// SLO
 		WRITE(data, nz = READ(data));
-		c = nz << 1;
-		nz = uint8_t(c);
+		c_flag = nz << 1;
+		nz = uint8_t(c_flag);
 		WRITE(data, nz);
 		nz = (a |= nz);
 		pc++;
-		goto loop;
 	}         
+		goto loop;
 
 	case 0x07 + 0x08: /* abs */     
 		pc++;          
@@ -2672,62 +2480,58 @@ case 0x65 + 0x04: /* imm */
 		ADD_PAGE                            
 			// SLO
 			WRITE(data, nz = READ(data));
-		c = nz << 1;
-		nz = uint8_t(c);
+		c_flag = nz << 1;
+		nz = uint8_t(c_flag);
 		WRITE(data, nz);
 		nz = (a |= nz);
 		pc++;
 		goto loop;
 
-	case 0x07 + 0x00: /* zp */     
-		pc++;           
-		data = page [pc];                   
+	case 0x07 + 0x00: /* zp */  
+		data = page [pc+1];                   
 		// SLO
-			WRITE(data, nz = READ(data));
-			c = nz << 1;
-			nz = uint8_t(c);
-			WRITE(data, nz);
-			nz = (a |= nz);
-			pc++;
-			goto loop;
+		WRITE(data, nz = READ(data));
+		c_flag = nz << 1;
+		nz = uint8_t(c_flag);
+		WRITE(data, nz);
+		nz = (a |= nz);
+		pc+=2;
+		goto loop;
 
 	// ARITH_ADDR_MODES_PTR( 0x47 )      
-	case 0x47 - 0x04: /* (ind,x) */        
-		pc++;   
-		data = page [pc];                   
+	case 0x47 - 0x04: /* (ind,x) */  
+		data = page [pc+1];                   
 		IND_X                               
 			// SRE
 			WRITE(data, nz = READ(data));
-		c = nz << 8;
+		c_flag = nz << 8;
 		nz >>= 1;
 		WRITE(data, nz);
 		nz = a ^= nz;
-		pc++;
+		pc+=2;
 		goto loop;
 
 	case 0x47 + 0x0C:
-		pc++;
-		data = page [pc];                   
+		data = page [pc+1];                   
 		IND_Y(false,false)                  
-			// SRE
-			WRITE(data, nz = READ(data));
-		c = nz << 8;
-		nz >>= 1;
-		WRITE(data, nz);
-		nz = a ^= nz;
-		pc++;
-		goto loop;
-
-	case 0x47 + 0x10: /* zp,X */             
-		pc++; 
-		data = uint8_t (page [pc] + x);     
 		// SRE
 		WRITE(data, nz = READ(data));
-		c = nz << 8;
+		c_flag = nz << 8;
 		nz >>= 1;
 		WRITE(data, nz);
 		nz = a ^= nz;
-		pc++;
+		pc+=2;
+		goto loop;
+
+	case 0x47 + 0x10: /* zp,X */  
+		data = uint8_t (page [pc+1] + x);     
+		// SRE
+		WRITE(data, nz = READ(data));
+		c_flag = nz << 8;
+		nz >>= 1;
+		WRITE(data, nz);
+		nz = a ^= nz;
+		pc+=2;
 		goto loop;
 
 	case 0x47 + 0x14: /* abs,Y */           
@@ -2739,7 +2543,7 @@ case 0x65 + 0x04: /* imm */
 				READ_NO_RETURN(data - (temp & 0x100));
 			// SRE
 			WRITE(data, nz = READ(data));
-			c = nz << 8;
+			c_flag = nz << 8;
 			nz >>= 1;
 			WRITE(data, nz);
 			nz = a ^= nz;
@@ -2756,7 +2560,7 @@ case 0x65 + 0x04: /* imm */
 		READ_NO_RETURN( data - ( temp & 0x100 ) );    
 		// SRE
 		WRITE(data, nz = READ(data));
-		c = nz << 8;
+		c_flag = nz << 8;
 		nz >>= 1;
 		WRITE(data, nz);
 		nz = a ^= nz;
@@ -2770,82 +2574,73 @@ case 0x65 + 0x04: /* imm */
 		ADD_PAGE                            
 			// SRE
 			WRITE(data, nz = READ(data));
-		c = nz << 8;
+		c_flag = nz << 8;
 		nz >>= 1;
 		WRITE(data, nz);
 		nz = a ^= nz;
 		pc++;
 		goto loop;
 
-	case 0x47 + 0x00: /* zp */         
-		pc++;       
-		data = page [pc];                   
+	case 0x47 + 0x00: /* zp */  
+		data = page [pc+1];                   
 		// SRE
-			WRITE( data, nz = READ( data ) );
-			c = nz << 8;
-			nz >>= 1;
-			WRITE( data, nz );
-			nz = a ^= nz;
-			pc++;
-			goto loop;
+		WRITE( data, nz = READ( data ) );
+		c_flag = nz << 8;
+		nz >>= 1;
+		WRITE( data, nz );
+		nz = a ^= nz;
+		pc+=2;
+		goto loop;
 
 	case 0x4B: // ALR
-		pc++;
-		a &= page [pc];
-		c = a << 8;
-		a = nz = a >> 1;
-		pc++;
+		a &= page [pc+1];
+		c_flag = a << 8;
+		nz = a >>= 1;
+		pc+=2;
 		goto loop;
 
 	case 0x0B: // ANC
 	case 0x2B:
-		pc++;
-		nz = a &= page[pc];
-		c = a << 1;
-		pc++;
+		nz = a &= page[pc+1];
+		c_flag = a << 1;
+		pc+=2;
 		goto loop;
 
 	case 0x6B: // ARR
-		pc++;
-		nz = a = uint8_t( ( ( page[pc] & a ) >> 1 ) | ( ( c >> 1 ) & 0x80 ) );
-		c = a << 2;
-		status = ( status & ~st_v ) | ( ( a ^ a << 1 ) & st_v );
-		pc++;
+		nz = a = uint8_t( ( ( page[pc+1] & a ) >> 1 ) | ( ( c_flag >> 1 ) & 0x80 ) );
+		c_flag = a << 2;
+		status_v = (a ^ a << 1) << 2;
+		pc+=2;
 		goto loop;
 
 	case 0xAB: // LXA
-		pc++;
-		nz = x = a = page [pc];
-		pc++;
+		nz = x = a = page [pc+1];
+		pc+=2;
 		goto loop;
 
 	case 0xA3: // LAX
-		pc++;
-		data = page [pc];
+		data = page [pc+1];
 		IND_X
 		nz = x = a = READ(data);
-		pc++;
+		pc+=2;
 		goto loop;
 
 	case 0xB3:
-		pc++;
-		data = page[pc];
+		data = page[pc+1];
 		IND_Y(true,true)
 		nz = x = a = READ(data);
-		pc++;
+		pc+=2;
 		goto loop;
 
 	case 0xB7:
-		pc++;
-		data = uint8_t (page[pc] + y);
+		data = uint8_t (page[pc+1] + y);
 		nz = x = a = READ_LOW(data);
-		pc++;
+		pc+=2;
 		goto loop;
 
 	case 0xA7:
-		pc++;
-		nz = x = a = READ_LOW( page[pc] );
-		pc++;
+		nz = x = a = READ_LOW( page[pc+1] );
+		pc+=2;
 		goto loop;
 
 	case 0xBF: {
@@ -2870,19 +2665,16 @@ case 0x65 + 0x04: /* imm */
 		goto loop;
 
 	case 0x83: // SAX
-		pc++;
-		data = page[pc];
+		data = page[pc+1];
 		IND_X
 		WRITE(data, a & x);
-		pc++;
+		pc+=2;
 		goto loop;
 
 	case 0x97:
-		pc++;
-		data = page[pc];
-		data = uint8_t (data + y);
+		data = uint8_t (page[pc+1] + y);
 		WRITE(data, a & x);
-		pc++;
+		pc+=2;
 		goto loop;
 
 	case 0x8F:
@@ -2894,25 +2686,21 @@ case 0x65 + 0x04: /* imm */
 		goto loop;
 
 	case 0x87:
-		pc++;
-		data = page[pc];
-		WRITE( data, a & x );
-		pc++;
+		WRITE( page[pc+1], a & x );
+		pc+=2;
 		goto loop;
 
 	case 0xCB: // SBX
-		pc++;
-		data = ( a & x ) - page[pc];
-		c = ( data <= 0xFF ) ? 0x100 : 0;
+		data = ( a & x ) - page[pc+1];
+		c_flag = ( data <= 0xFF ) ? 0x100 : 0;
 		nz = x = uint8_t( data );
-		pc++;
+		pc+=2;
 		goto loop;
 
 	case 0x93: // SHA (ind),Y
-		pc++;
-		data = page[pc];
+		data = page[pc+1];
 		IND_Y(false,false)
-		pc++;
+		pc+=2;
 		WRITE( data, uint8_t( a & x & ( ( data >> 8 ) + 1 ) ) );
 		goto loop;
 
@@ -3024,16 +2812,23 @@ end:
 	
 	{
 		int temp;
-		CALC_STATUS( temp );
-		r.status = temp;
+		// CALC STATUS( temp );
+		temp = status_i | (status_d & st_d) | ((status_v >> 2) & st_v);
+		temp |= (c_flag >> 8) & st_c;
+		if (IS_NEG)
+			temp |= st_n;
+		if (!(nz & 0xFF))
+			temp |= st_z;
+
+		registers.status = temp;
 	}
 	
 	this->clock_count = clock_count;
-	r.pc = pc;
-	r.sp = GET_SP();
-	r.a = a;
-	r.x = x;
-	r.y = y;
+	registers.pc = pc;
+	registers.sp = GET_SP();
+	registers.a = a;
+	registers.x = x;
+	registers.y = y;
 	irq_time_ = LONG_MAX / 2 + 1;
 	
 	return result;

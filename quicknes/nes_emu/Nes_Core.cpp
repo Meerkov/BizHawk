@@ -100,7 +100,7 @@ void Nes_Core::save_state( Nes_State_* out ) const
 	out->nes = nes;
 	out->nes_valid = true;
 	
-	*out->cpu = cpu::r;
+	*out->cpu = cpu::registers;
 	out->cpu_valid = true;
 	
 	*out->joypad = joypad;
@@ -148,7 +148,7 @@ void Nes_Core::load_state( Nes_State_ const& in )
 		nes.frame_count = 0;
 	
 	if ( in.cpu_valid )
-		cpu::r = *in.cpu;
+		cpu::registers = *in.cpu;
 	
 	if ( in.joypad_valid )
 		joypad = *in.joypad;
@@ -368,25 +368,25 @@ void Nes_Core::reset( bool full_reset, bool erase_battery_ram )
 	
 	mapper->reset();
 	
-	cpu::r.pc = read_vector( 0xFFFC );
-	cpu::r.sp = 0xfd;
-	cpu::r.a = 0;
-	cpu::r.x = 0;
-	cpu::r.y = 0;
-	cpu::r.status = irq_inhibit_mask;
+	cpu::registers.pc = read_vector( 0xFFFC );
+	cpu::registers.sp = 0xfd;
+	cpu::registers.a = 0;
+	cpu::registers.x = 0;
+	cpu::registers.y = 0;
+	cpu::registers.status = irq_inhibit_mask;
 	nes.timestamp = 0;
 	error_count = 0;
 }
 
 void Nes_Core::vector_interrupt( nes_addr_t vector )
 {
-	cpu::push_byte( cpu::r.pc >> 8 );
-	cpu::push_byte( cpu::r.pc & 0xFF );
-	cpu::push_byte( cpu::r.status | 0x20 ); // reserved bit is set
+	cpu::push_byte( cpu::registers.pc >> 8 );
+	cpu::push_byte( cpu::registers.pc & 0xFF );
+	cpu::push_byte( cpu::registers.status | 0x20 ); // reserved bit is set
 	
 	cpu_adjust_time( 7 );
-	cpu::r.status |= irq_inhibit_mask;
-	cpu::r.pc = read_vector( vector );
+	cpu::registers.status |= irq_inhibit_mask;
+	cpu::registers.pc = read_vector( vector );
 }
 
 inline nes_time_t Nes_Core::earliest_irq( nes_time_t present )
@@ -494,7 +494,7 @@ nes_time_t Nes_Core::emulate_frame_()
 		// IRQ
 		nes_time_t irq_time = earliest_irq( present );
 		cpu_set_irq_time( irq_time );
-		if ( present >= irq_time && (!(cpu::r.status & irq_inhibit_mask) ||
+		if ( present >= irq_time && (!(cpu::registers.status & irq_inhibit_mask) ||
 				last_result == cpu::result_sei) )
 		{
 			if ( last_result != cpu::result_cli )

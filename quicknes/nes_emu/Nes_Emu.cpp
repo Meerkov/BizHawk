@@ -497,10 +497,10 @@ Nes_Emu::rgb_t const Nes_Emu::nes_colors [color_table_size] =
 
 void Nes_Emu::get_regs(unsigned int *dest) const
 {
-	dest[0] = emu.r.a;
-	dest[1] = emu.r.x;
-	dest[2] = emu.r.y;
-	dest[3] = emu.r.sp;
-	dest[4] = emu.r.pc;
-	dest[5] = emu.r.status;
+	dest[0] = emu.registers.a;
+	dest[1] = emu.registers.x;
+	dest[2] = emu.registers.y;
+	dest[3] = emu.registers.sp;
+	dest[4] = emu.registers.pc;
+	dest[5] = emu.registers.status;
 }
